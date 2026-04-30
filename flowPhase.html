@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>ESP32-S3 DAQ</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600;700&family=Syne:wght@400;700;800&display=swap" rel="stylesheet"/>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+:root {
+  --bg:       #07090e;
+  --surface:  #0c1018;
+  --surface2: #111822;
+  --border:   #192130;
+  --accent:   #38bdf8;
+  --green:    #34d399;
+  --orange:   #fb923c;
+  --red:      #f87171;
+  --purple:   #a78bfa;
+  --yellow:   #fbbf24;
+  --text:     #b8cfe0;
+  --muted:    #334d63;
+  --grid:     rgba(56,189,248,0.025);
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:'JetBrains Mono',monospace;font-size:13px;min-height:100vh;position:relative}
+body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;background-image:linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px);background-size:48px 48px}
+.wrap{position:relative;z-index:1;max-width:1200px;margin:0 auto;padding:30px 24px}
+
+header{display:flex;align-items:center;justify-content:space-between;margin-bottom:30px;padding-bottom:20px;border-bottom:1px solid var(--border);flex-wrap:wrap;gap:14px}
+.logo h1{font-family:'Syne',sans-serif;font-size:22px;font-weight:800;color:#fff}
+.logo h1 em{color:var(--accent);font-style:normal}
+.logo p{color:var(--muted);font-size:10px;margin-top:4px;letter-spacing:2.5px;text-transform:uppercase}
+
+.conn-row{display:flex;align-items:center;gap:10px}
+#ipInput{background:var(--surface2);border:1px solid var(--border);border-radius:3px;color:var(--text);padding:7px 12px;width:160px;outline:none}
+.ws-dot{width:8px;height:8px;border-radius:50%;background:var(--muted)}
+.ws-dot.open{background:var(--green);box-shadow:0 0 8px var(--green)}
+.ws-dot.err{background:var(--red)}
+
+.stats{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:20px}
+.stat{background:var(--surface);border:1px solid var(--border);border-radius:5px;padding:13px 14px}
+.sl{font-size:9px;letter-spacing:2px;text-transform:uppercase;color:var(--muted);margin-bottom:6px}
+.sv{font-size:20px;font-weight:700;color:#fff}
+.sv.a{color:var(--accent)}.sv.g{color:var(--green)}.sv.p{color:var(--purple)}.sv.o{color:var(--orange)}
+
+.controls{display:flex;gap:10px;margin-bottom:20px;flex-wrap:wrap;align-items:center}
+button{font-family:inherit;font-size:11px;font-weight:700;text-transform:uppercase;padding:11px 20px;border-radius:3px;cursor:pointer;background:var(--surface);transition:0.2s}
+button:disabled{opacity:0.2;cursor:not-allowed}
+#btnConnect{border:1px solid var(--accent);color:var(--accent)}
+#btnStart{border:1px solid var(--red);color:var(--red)}
+#btnStream{border:1px solid var(--purple);color:var(--purple)}
+#btnDownload{border:1px solid var(--orange);color:var(--orange)}
+#btnVisualize{border:1px solid var(--green);color:var(--green)}
+
+.mode-container { display: flex; align-items: center; gap: 10px; background: var(--surface); border: 1px solid var(--border); padding: 7px 15px; border-radius: 4px; }
+.switch { position: relative; display: inline-block; width: 34px; height: 18px; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.slider { position: absolute; cursor: pointer; inset: 0; background-color: var(--muted); transition: .4s; border-radius: 20px; }
+.slider:before { position: absolute; content: ""; height: 12px; width: 12px; left: 3px; bottom: 3px; background-color: white; transition: .4s; border-radius: 50%; }
+input:checked + .slider { background-color: var(--orange); }
+input:checked + .slider:before { transform: translateX(16px); }
+.mode-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); transition: color 0.3s;}
+.mode-label.active { color: var(--text); }
+
+.prog{margin-bottom:20px;display:none}
+.prog.show{display:block}
+.prog-top{display:flex;justify-content:space-between;margin-bottom:6px;font-size:9px;color:var(--muted)}
+.prog-track{height:2px;background:var(--border);overflow:hidden}
+.prog-fill{height:100%;width:0%;background:linear-gradient(90deg,var(--accent),var(--green));transition:width 0.1s}
+
+#log{background:var(--surface);border:1px solid var(--border);padding:10px;height:120px;overflow-y:auto;font-size:11px;margin-bottom:20px}
+.ll.ok{color:var(--green)}
+.ll.warn{color:var(--yellow)}
+
+.chart-wrap{display:none;margin-bottom:30px}
+.chart-wrap.show{display:block}
+.chart-container{background:var(--surface);border:1px solid var(--border);margin-bottom:10px;padding:10px;height:250px}
+
+.tbl-wrap{display:none}
+.tbl-wrap.show{display:block}
+.tbl-scroll{overflow:auto;max-height:280px;border:1px solid var(--border)}
+table{width:100%;border-collapse:collapse;font-size:11px}
+thead th{background:var(--surface);padding:8px;text-align:right;color:var(--accent);position:sticky;top:0}
+tbody td{padding:5px 8px;text-align:right;border-bottom:1px solid var(--border);color:var(--text)}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header>
+    <div class="logo">
+      <h1>ESP32<em>·</em>DAQ</h1>
+      <p>ICM42670 + LTC2351 + Start Control</p>
+    </div>
+    <div class="conn-row">
+      <input id="ipInput" type="text" value="10.225.202.182">
+      <div class="ws-dot" id="wsDot"></div>
+      <span id="wsState" style="font-size:10px; text-transform:uppercase; color:var(--muted)">Disconnected</span>
+    </div>
+  </header>
+
+  <div class="stats">
+    <div class="stat"><div class="sl">State</div><div class="sv a" id="sState">—</div></div>
+    <div class="stat"><div class="sl">Samples</div><div class="sv g" id="sSamples">—</div></div>
+    <div class="stat"><div class="sl">Packets</div><div class="sv p" id="sPkts">—</div></div>
+    <div class="stat"><div class="sl">Speed</div><div class="sv a" id="sSpeed">—</div></div>
+    <div class="stat"><div class="sl">Elapsed</div><div class="sv o" id="sElapsed">—</div></div>
+  </div>
+
+  <div class="controls">
+    <button id="btnConnect">⬡ Connect</button>
+    <button id="btnStart" disabled>⏺ Start</button>
+
+    <div class="mode-container">
+      <span class="mode-label active" id="lblCough">Cough</span>
+      <label class="switch">
+        <input type="checkbox" id="modeToggle">
+        <span class="slider"></span>
+      </label>
+      <span class="mode-label" id="lblFlow">Flow</span>
+    </div>
+
+    <button id="btnStream" disabled>⇄ Stream</button>
+    <button id="btnDownload" disabled>↓ CSV</button>
+    <button id="btnVisualize" disabled>📈 Visualize</button>
+  </div>
+
+  <div class="prog" id="prog">
+    <div class="prog-top"><span id="progLabel">Streaming</span><span id="progPct">0%</span></div>
+    <div class="prog-track"><div class="prog-fill" id="progFill"></div></div>
+  </div>
+
+  <div id="log"></div>
+
+  <div class="chart-wrap" id="chartWrap">
+    <div class="chart-container"><canvas id="chartAdc0"></canvas></div>
+    <div class="chart-container"><canvas id="chartAdc1"></canvas></div>
+    <div class="chart-container"><canvas id="chartAdc2"></canvas></div>
+    <div class="chart-container"><canvas id="chartAdc3"></canvas></div>
+    <div class="chart-container"><canvas id="chartAdc4"></canvas></div>
+    <div class="chart-container"><canvas id="chartImu"></canvas></div>
+    <div class="chart-container"><canvas id="chartGyro"></canvas></div>
+  </div>
+
+  <div class="tbl-wrap" id="tblWrap">
+    <div class="tbl-scroll">
+      <table>
+        <thead><tr><th>#</th><th>Time (us)</th><th>ADC0</th><th>ADC1</th><th>ADC2</th><th>ADC3</th><th>ADC4</th><th>U0</th><th>U1</th><th>AX</th><th>AY</th><th>AZ</th><th>GX</th><th>GY</th><th>GZ</th></tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let wsConn = null, samples = null, totalExpected = 0, receivedCount = 0, pktsReceived = 0;
+let streamStartTime = 0, speedTimer = null, charts = [];
+let reconnectTimer = null;
+const FIELDS = 14;
+
+function log(msg, cls='') {
+  const t = new Date().toLocaleTimeString();
+  $('log').innerHTML += `<div class="ll ${cls}"><span style="color:var(--muted);margin-right:8px">${t}</span>${msg}</div>`;
+  $('log').scrollTop = $('log').scrollHeight;
+}
+
+function setWsState(s) {
+  $('wsDot').className = 'ws-dot ' + (s==='open' ? 'open' : s==='error' ? 'err' : '');
+  $('wsState').textContent = s.toUpperCase();
+  $('btnStream').disabled = s !== 'open';
+  $('btnStart').disabled = s !== 'open';
+}
+
+function connect() {
+  if (wsConn && wsConn.readyState === 1) { wsConn.close(); return; }
+  const ip = $('ipInput').value.trim();
+  wsConn = new WebSocket(`ws://${ip}:81`);
+  wsConn.binaryType = 'arraybuffer';
+
+  wsConn.onopen = () => { 
+    setWsState('open'); 
+    log('Connected','ok'); 
+    if(reconnectTimer) { clearInterval(reconnectTimer); reconnectTimer = null; }
+  };
+
+  wsConn.onclose = () => { 
+    setWsState('closed'); 
+    log('Disconnected'); 
+    clearInterval(speedTimer); 
+  };
+
+  wsConn.onerror = () => setWsState('error');
+  wsConn.onmessage = onMessage;
+}
+
+$('btnConnect').onclick = connect;
+
+$('btnStart').onclick = () => {
+  if (!wsConn || wsConn.readyState !== 1) return;
+  log('Starting acquisition... ESP32 will disconnect now.','warn');
+  wsConn.send('Start');
+  
+  // Start polling for reconnection after a delay (since we know WiFi turns off)
+  log('WiFi will be OFF for ~20s. Waiting for device to return...');
+  setTimeout(() => {
+    reconnectTimer = setInterval(() => {
+        log('Attempting to reconnect...');
+        connect();
+    }, 5000);
+  }, 15000); // Wait 15s before even trying to reconnect
+};
+
+$('btnStream').onclick = () => {
+  receivedCount = 0; pktsReceived = 0; samples = null;
+  $('tbody').innerHTML = '';
+  $('prog').classList.add('show');
+  $('tblWrap').classList.add('show');
+  $('chartWrap').classList.remove('show');
+  wsConn.send('Stream');
+};
+
+function onMessage(evt) {
+  if (evt.data instanceof ArrayBuffer) { handleBinary(evt.data); return; }
+  const msg = JSON.parse(evt.data);
+  
+  if (msg.type === 'stream_start') {
+    totalExpected = parseInt(msg.value);
+    samples = new Float32Array(totalExpected * FIELDS);
+    streamStartTime = performance.now();
+    speedTimer = setInterval(() => {
+      const el = (performance.now() - streamStartTime) / 1000;
+      $('sSpeed').textContent = Math.round(receivedCount / el).toLocaleString() + '/s';
+      $('sElapsed').textContent = el.toFixed(1) + 's';
+    }, 500);
+  } else if (msg.type === 'stream_end' || msg.value === 'stream_finished') {
+    clearInterval(speedTimer);
+    $('btnDownload').disabled = false;
+    $('btnVisualize').disabled = false;
+    $('sState').textContent = 'DONE';
+    renderTable();
+    log('Stream Complete','ok');
+  } else if (msg.type === 'status') {
+    $('sState').textContent = msg.value;
+  } else if (msg.type === 'device_info') {
+      log(`Device returned: ${msg.samples} samples stored. Ready to Stream.`, 'ok');
+      $('sSamples').textContent = msg.samples.toLocaleString();
+  }
+}
+
+function handleBinary(buf) {
+  const dv = new DataView(buf);
+  const seq = dv.getUint16(0, true);
+  const count = dv.getUint16(2, true);
+  if (!samples) return;
+
+  pktsReceived++;
+  $('sPkts').textContent = pktsReceived.toLocaleString();
+
+  const baseIdx = seq * 50;
+  let off = 4;
+  for (let i = 0; i < count; i++) {
+    const si = baseIdx + i;
+    if (si >= totalExpected) break;
+    const b = si * FIELDS;
+    samples[b+0] = dv.getUint32(off, true);
+    samples[b+1] = dv.getUint16(off+4, true);  
+    samples[b+2] = dv.getUint16(off+6, true);  
+    samples[b+3] = dv.getUint16(off+8, true);  
+    samples[b+4] = dv.getUint16(off+10, true); 
+    samples[b+5] = dv.getUint16(off+12, true); 
+    samples[b+6] = dv.getUint16(off+14, true); 
+    samples[b+7] = dv.getUint16(off+16, true); 
+    samples[b+8] = dv.getInt16(off+18, true) / 2048.0; 
+    samples[b+9] = dv.getInt16(off+20, true) / 2048.0; 
+    samples[b+10] = dv.getInt16(off+22, true) / 2048.0; 
+    samples[b+11] = dv.getInt16(off+24, true) / 16.4;   
+    samples[b+12] = dv.getInt16(off+26, true) / 16.4;   
+    samples[b+13] = dv.getInt16(off+28, true) / 16.4;   
+    off += 30;
+    receivedCount = Math.max(receivedCount, si + 1);
+  }
+  $('sSamples').textContent = receivedCount.toLocaleString();
+  const pct = Math.round((receivedCount/totalExpected)*100);
+  $('progFill').style.width = pct + '%';
+  $('progPct').textContent = pct + '%';
+}
+
+function renderTable() {
+  const start = Math.max(0, receivedCount - 200);
+  let h = '';
+  const previewU1 = $('modeToggle').checked ? 1 : 0;
+  for (let i = start; i < receivedCount; i++) {
+    const b = i * FIELDS;
+    h += `<tr><td>${i+1}</td><td>${samples[b]}</td><td>${samples[b+1]}</td><td>${samples[b+2]}</td><td>${samples[b+3]}</td><td>${samples[b+4]}</td><td>${samples[b+5]}</td><td>${samples[b+6]}</td><td>${previewU1}</td><td>${samples[b+8].toFixed(2)}</td><td>${samples[b+9].toFixed(2)}</td><td>${samples[b+10].toFixed(2)}</td><td>${samples[b+11].toFixed(1)}</td><td>${samples[b+12].toFixed(1)}</td><td>${samples[b+13].toFixed(1)}</td></tr>`;
+  }
+  $('tbody').innerHTML = h;
+}
+
+$('btnVisualize').onclick = () => {
+  $('chartWrap').classList.add('show');
+  charts.forEach(c => c.destroy()); charts = [];
+  const step = Math.max(1, Math.floor(receivedCount / 2000));
+  const t = [], a0 = [], a1 = [], a2 = [], a3 = [], a4 = [], imuX = [], imuY = [], imuZ = [], gX = [], gY = [], gZ = [];
+
+  for (let i = 0; i < receivedCount; i += step) {
+    const b = i * FIELDS;
+    t.push((samples[b]/1000000).toFixed(2) + 's');
+    a0.push(samples[b+1]); a1.push(samples[b+2]); a2.push(samples[b+3]); a3.push(samples[b+4]); a4.push(samples[b+5]);
+    imuX.push(samples[b+8]); imuY.push(samples[b+9]); imuZ.push(samples[b+10]);
+    gX.push(samples[b+11]); gY.push(samples[b+12]); gZ.push(samples[b+13]);
+  }
+
+  const opt = (title) => ({ 
+    responsive:true, maintainAspectRatio:false, 
+    elements:{point:{radius:0},line:{borderWidth:1.5}},
+    plugins: { title: { display:true, text:title, color:'#fff' }, legend: { display: false } },
+    scales:{x:{ticks:{maxTicksLimit:10, color:'#334d63'}},y:{grid:{color:'#192130'}, ticks:{color:'#b8cfe0'}}} 
+  });
+  
+  charts.push(new Chart($('chartAdc0'), { type:'line', data:{ labels:t, datasets:[{label:'ADC0',data:a0,borderColor:'#34d399'}] }, options:opt('ADC CHANNEL 0') }));
+  charts.push(new Chart($('chartAdc1'), { type:'line', data:{ labels:t, datasets:[{label:'ADC1',data:a1,borderColor:'#fb923c'}] }, options:opt('ADC CHANNEL 1') }));
+  charts.push(new Chart($('chartAdc2'), { type:'line', data:{ labels:t, datasets:[{label:'ADC2',data:a2,borderColor:'#f87171'}] }, options:opt('ADC CHANNEL 2') }));
+  charts.push(new Chart($('chartAdc3'), { type:'line', data:{ labels:t, datasets:[{label:'ADC3',data:a3,borderColor:'#a78bfa'}] }, options:opt('ADC CHANNEL 3') }));
+  charts.push(new Chart($('chartAdc4'), { type:'line', data:{ labels:t, datasets:[{label:'ADC4',data:a4,borderColor:'#fbbf24'}] }, options:opt('ADC CHANNEL 4') }));
+  charts.push(new Chart($('chartImu'),  { type:'line', data:{ labels:t, datasets:[{label:'AX',data:imuX,borderColor:'#38bdf8'},{label:'AY',data:imuY,borderColor:'#34d399'},{label:'AZ',data:imuZ,borderColor:'#fb923c'}] }, options:{...opt('ACCELEROMETER (g)'), plugins:{title:{display:true,text:'ACCELEROMETER (g)',color:'#fff'},legend:{display:true,labels:{color:'#b8cfe0'}}}} }));
+  charts.push(new Chart($('chartGyro'), { type:'line', data:{ labels:t, datasets:[{label:'GX',data:gX,borderColor:'#a78bfa'},{label:'GY',data:gY,borderColor:'#fbbf24'},{label:'GZ',data:gZ,borderColor:'#f87171'}] }, options:{...opt('GYROSCOPE (dps)'), plugins:{title:{display:true,text:'GYROSCOPE (dps)',color:'#fff'},legend:{display:true,labels:{color:'#b8cfe0'}}}} }));
+};
+
+$('btnDownload').onclick = () => {
+  if (!samples || receivedCount === 0) return;
+  const downloadU1 = $('modeToggle').checked ? 1 : 0;
+  const modeName = downloadU1 === 1 ? 'flow' : 'cough';
+  let s = 'timestamp_us,adc0,adc1,adc2,adc3,adc4,user0,user1,ax,ay,az,gx,gy,gz\n';
+  for (let i=0; i<receivedCount; i++) {
+    const b = i * FIELDS;
+    s += `${samples[b]},${samples[b+1]},${samples[b+2]},${samples[b+3]},${samples[b+4]},${samples[b+5]},${samples[b+6]},${downloadU1},${samples[b+8].toFixed(4)},${samples[b+9].toFixed(4)},${samples[b+10].toFixed(4)},${samples[b+11].toFixed(2)},${samples[b+12].toFixed(2)},${samples[b+13].toFixed(2)}\n`;
+  }
+  const blob = new Blob([s], {type:'text/csv'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); 
+  const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  a.href = url; a.download = `daq_${modeName}_${ts}.csv`; a.click();
+};
+</script>
+</body>
+</html>

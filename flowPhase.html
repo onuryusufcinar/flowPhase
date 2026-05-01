@@ -185,7 +185,7 @@ $('btnStart').onclick = async () => {
     setTimeout(() => {
       isRecordingActive = true;
       log("Mic Data Capture ON (300ms offset active)", "ok");
-    }, 680);
+    }, 720);
 
     processor.onaudioprocess = (e) => {
       if (!isRecordingActive) return;

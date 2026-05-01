@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>ESP32-S3 DAQ + Audio</title>
+<title>ESP32-S3 DAQ + 9600Hz Mic</title>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600;700&family=Syne:wght@400;700;800&display=swap" rel="stylesheet"/>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
@@ -80,7 +80,7 @@ tbody td{padding:5px 8px;text-align:right;border-bottom:1px solid var(--border);
   <header>
     <div class="logo">
       <h1>ESP32<em>·</em>DAQ</h1>
-      <p>ICM42670 + LTC2351 + MIC RECORDING</p>
+      <p>ICM42670 + LTC2351 + 9600Hz 12-Bit MIC</p>
     </div>
     <div class="conn-row">
       <input id="ipInput" type="text" value="10.42.89.182">
@@ -102,7 +102,7 @@ tbody td{padding:5px 8px;text-align:right;border-bottom:1px solid var(--border);
     <button id="btnConnect">⬡ Connect</button>
     <button id="btnStart" disabled>▶ Start</button>
     <button id="btnStream" disabled>⇄ Stream</button>
-    <button id="btnDownload" disabled>↓ Save All</button>
+    <button id="btnDownload" disabled>↓ Save Files</button>
     <button id="btnVisualize" disabled>📈 Visualize</button>
   </div>
 
@@ -159,7 +159,6 @@ function setWsState(s) {
   $('btnStart').disabled = !isOpen;
 }
 
-// Microphone Recording Logic
 async function startMicRecording() {
   audioChunks = [];
   try {
@@ -176,30 +175,49 @@ async function startMicRecording() {
     };
 
     log("Mic Recording Started (20s)...", "ok");
-    
-    setTimeout(() => {
-      stopMicRecording();
-    }, 20000);
-
+    setTimeout(() => stopMicRecording(), 20000);
   } catch (err) {
     log("Mic Error: " + err.message, "err");
   }
 }
 
-function stopMicRecording() {
+async function stopMicRecording() {
   if (processor) {
     processor.disconnect();
     mediaStream.getTracks().forEach(t => t.stop());
     
-    // Flatten chunks into a single buffer
+    // Flatten original chunks
     let totalLen = audioChunks.reduce((acc, curr) => acc + curr.length, 0);
-    recordedBuffer = new Float32Array(totalLen);
+    let fullBuffer = new Float32Array(totalLen);
     let offset = 0;
     for (let chunk of audioChunks) {
-      recordedBuffer.set(chunk, offset);
+      fullBuffer.set(chunk, offset);
       offset += chunk.length;
     }
-    log("Mic Recording Finished.", "ok");
+
+    // Resample to 9600 Hz
+    const targetRate = 9600;
+    const duration = fullBuffer.length / audioCtx.sampleRate;
+    const offlineCtx = new OfflineAudioContext(1, Math.ceil(duration * targetRate), targetRate);
+    
+    const bufferSource = offlineCtx.createBufferSource();
+    const audioBuffer = offlineCtx.createBuffer(1, fullBuffer.length, audioCtx.sampleRate);
+    audioBuffer.copyToChannel(fullBuffer, 0);
+    
+    bufferSource.buffer = audioBuffer;
+    bufferSource.connect(offlineCtx.destination);
+    bufferSource.start();
+    
+    const renderedBuffer = await offlineCtx.startRendering();
+    const resampledData = renderedBuffer.getChannelData(0);
+
+    // Map to 12-bit (0-4095), mean 2048
+    recordedBuffer = new Float32Array(resampledData.length);
+    for (let i = 0; i < resampledData.length; i++) {
+      let scaled = (resampledData[i] * 2047) + 2048;
+      recordedBuffer[i] = Math.max(0, Math.min(4095, Math.round(scaled)));
+    }
+    log(`Mic Data Ready. Sampling: 9600Hz. Range: 0-4095.`, "ok");
   }
 }
 
@@ -216,8 +234,6 @@ $('btnStart').onclick = async () => {
     
     wsConn.send('Start');
     log('Sent: Start', 'ok');
-    
-    // Trigger Browser Mic Recording
     await startMicRecording();
   }
 };
@@ -338,46 +354,17 @@ $('btnVisualize').onclick = () => {
   charts.push(new Chart($('chartImu'),  { type:'line', data:{ labels:t, datasets:[{label:'AX',data:imuX,borderColor:'#38bdf8'},{label:'AY',data:imuY,borderColor:'#34d399'},{label:'AZ',data:imuZ,borderColor:'#fb923c'}] }, options:{...opt('ACCELEROMETER (g)'), plugins:{title:{display:true,text:'ACCELEROMETER (g)',color:'#fff'},legend:{display:true,labels:{color:'#b8cfe0'}}}} }));
   charts.push(new Chart($('chartGyro'), { type:'line', data:{ labels:t, datasets:[{label:'GX',data:gX,borderColor:'#a78bfa'},{label:'GY',data:gY,borderColor:'#fbbf24'},{label:'GZ',data:gZ,borderColor:'#f87171'}] }, options:{...opt('GYROSCOPE (dps)'), plugins:{title:{display:true,text:'GYROSCOPE (dps)',color:'#fff'},legend:{display:true,labels:{color:'#b8cfe0'}}}} }));
   
-  // Visualize Audio
+  // Audio Visualization
   if (recordedBuffer) {
-    const micData = [];
-    const micLabels = [];
+    const micData = [], micLabels = [];
     const stepMic = Math.floor(recordedBuffer.length / 2000);
     for (let i = 0; i < recordedBuffer.length; i += stepMic) {
       micData.push(recordedBuffer[i]);
       micLabels.push("");
     }
-    charts.push(new Chart($('chartMic'), { type:'line', data:{ labels:micLabels, datasets:[{label:'Mic',data:micData,borderColor:'#f87171'}] }, options:opt('MICROPHONE WAVEFORM') }));
+    charts.push(new Chart($('chartMic'), { type:'line', data:{ labels:micLabels, datasets:[{label:'Mic (12-bit)',data:micData,borderColor:'#f87171'}] }, options:opt('MICROPHONE (9600Hz, 12-bit)') }));
   }
 };
-
-// Helper to encode WAV
-function encodeWAV(samples, sampleRate) {
-  let buffer = new ArrayBuffer(44 + samples.length * 2);
-  let view = new DataView(buffer);
-  const writeString = (view, offset, string) => {
-    for (let i = 0; i < string.length; i++) view.setUint8(offset + i, string.charCodeAt(i));
-  };
-  writeString(view, 0, 'RIFF');
-  view.setUint32(4, 32 + samples.length * 2, true);
-  writeString(view, 8, 'WAVE');
-  writeString(view, 12, 'fmt ');
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, 1, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * 2, true);
-  view.setUint16(32, 2, true);
-  view.setUint16(34, 16, true);
-  writeString(view, 36, 'data');
-  view.setUint32(40, samples.length * 2, true);
-  let offset = 44;
-  for (let i = 0; i < samples.length; i++, offset += 2) {
-    let s = Math.max(-1, Math.min(1, samples[i]));
-    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
-  }
-  return new Blob([view], { type: 'audio/wav' });
-}
 
 $('btnDownload').onclick = () => {
   if (!samples || receivedCount === 0) return;
@@ -390,17 +377,17 @@ $('btnDownload').onclick = () => {
     s += `${samples[b]},${samples[b+1]},${samples[b+2]},${samples[b+3]},${samples[b+4]},${samples[b+5]},${samples[b+6]},${samples[b+7]},${samples[b+8].toFixed(4)},${samples[b+9].toFixed(4)},${samples[b+10].toFixed(4)},${samples[b+11].toFixed(2)},${samples[b+12].toFixed(2)},${samples[b+13].toFixed(2)}\n`;
   }
   const csvBlob = new Blob([s], {type:'text/csv'});
-  const csvUrl = URL.createObjectURL(csvBlob);
-  const aCsv = document.createElement('a'); 
-  aCsv.href = csvUrl; aCsv.download = prefix + ".csv"; aCsv.click();
+  const aCsv = document.createElement('a'); aCsv.href = URL.createObjectURL(csvBlob); aCsv.download = prefix + ".csv"; aCsv.click();
 
-  // 2. Download WAV
+  // 2. Download 12-bit Audio TXT
   if (recordedBuffer) {
-    const wavBlob = encodeWAV(recordedBuffer, audioCtx.sampleRate);
-    const wavUrl = URL.createObjectURL(wavBlob);
-    const aWav = document.createElement('a');
-    aWav.href = wavUrl; aWav.download = prefix + ".wav"; aWav.click();
-    log("Saved CSV and WAV files.", "ok");
+    const audioString = recordedBuffer.join('\n');
+    const audioBlob = new Blob([audioString], {type:'text/plain'});
+    const aAudio = document.createElement('a');
+    aAudio.href = URL.createObjectURL(audioBlob);
+    aAudio.download = prefix + "_mic_12bit.txt";
+    aAudio.click();
+    log("Saved CSV and 12-bit Audio Data.", "ok");
   }
 };
 </script>

@@ -48,7 +48,7 @@ header{display:flex;align-items:center;justify-content:space-between;margin-bott
 button{font-family:inherit;font-size:11px;font-weight:700;text-transform:uppercase;padding:11px 20px;border-radius:3px;cursor:pointer;background:var(--surface);transition:0.2s}
 button:disabled{opacity:0.2;cursor:not-allowed}
 #btnConnect{border:1px solid var(--accent);color:var(--accent)}
-#btnStart{border:1px solid var(--red);color:var(--red)}
+#btnStart{border:1px solid var(--green);color:var(--green)} /* New Start Button Style */
 #btnStream{border:1px solid var(--purple);color:var(--purple)}
 #btnDownload{border:1px solid var(--orange);color:var(--orange)}
 #btnVisualize{border:1px solid var(--green);color:var(--green)}
@@ -71,7 +71,6 @@ input:checked + .slider:before { transform: translateX(16px); }
 
 #log{background:var(--surface);border:1px solid var(--border);padding:10px;height:120px;overflow-y:auto;font-size:11px;margin-bottom:20px}
 .ll.ok{color:var(--green)}
-.ll.warn{color:var(--yellow)}
 
 .chart-wrap{display:none;margin-bottom:30px}
 .chart-wrap.show{display:block}
@@ -91,7 +90,7 @@ tbody td{padding:5px 8px;text-align:right;border-bottom:1px solid var(--border);
   <header>
     <div class="logo">
       <h1>ESP32<em>·</em>DAQ</h1>
-      <p>ICM42670 + LTC2351 + Start Control</p>
+      <p>ICM42670 + LTC2351 + Individual Channel Visualization</p>
     </div>
     <div class="conn-row">
       <input id="ipInput" type="text" value="10.42.89.182">
@@ -110,8 +109,8 @@ tbody td{padding:5px 8px;text-align:right;border-bottom:1px solid var(--border);
 
   <div class="controls">
     <button id="btnConnect">⬡ Connect</button>
-    <button id="btnStart" disabled>⏺ Start</button>
-
+    <button id="btnStart" disabled>▶ Start</button> <!-- New Start Button -->
+    
     <div class="mode-container">
       <span class="mode-label active" id="lblCough">Cough</span>
       <label class="switch">
@@ -157,7 +156,6 @@ tbody td{padding:5px 8px;text-align:right;border-bottom:1px solid var(--border);
 const $ = id => document.getElementById(id);
 let wsConn = null, samples = null, totalExpected = 0, receivedCount = 0, pktsReceived = 0;
 let streamStartTime = 0, speedTimer = null, charts = [];
-let reconnectTimer = null;
 const FIELDS = 14;
 
 function log(msg, cls='') {
@@ -167,49 +165,35 @@ function log(msg, cls='') {
 }
 
 function setWsState(s) {
-  $('wsDot').className = 'ws-dot ' + (s==='open' ? 'open' : s==='error' ? 'err' : '');
+  const isOpen = (s === 'open');
+  $('wsDot').className = 'ws-dot ' + (isOpen ? 'open' : s === 'error' ? 'err' : '');
   $('wsState').textContent = s.toUpperCase();
-  $('btnStream').disabled = s !== 'open';
-  $('btnStart').disabled = s !== 'open';
+  $('btnStream').disabled = !isOpen;
+  $('btnStart').disabled = !isOpen; // Enable/Disable Start button based on connection
 }
 
-function connect() {
-  if (wsConn && wsConn.readyState === 1) { wsConn.close(); return; }
-  const ip = $('ipInput').value.trim();
-  wsConn = new WebSocket(`ws://${ip}:81`);
-  wsConn.binaryType = 'arraybuffer';
-
-  wsConn.onopen = () => { 
-    setWsState('open'); 
-    log('Connected','ok'); 
-    if(reconnectTimer) { clearInterval(reconnectTimer); reconnectTimer = null; }
-  };
-
-  wsConn.onclose = () => { 
-    setWsState('closed'); 
-    log('Disconnected'); 
-    clearInterval(speedTimer); 
-  };
-
-  wsConn.onerror = () => setWsState('error');
-  wsConn.onmessage = onMessage;
-}
-
-$('btnConnect').onclick = connect;
-
+// Start Command Logic
 $('btnStart').onclick = () => {
-  if (!wsConn || wsConn.readyState !== 1) return;
-  log('Starting acquisition... ESP32 will disconnect now.','warn');
-  wsConn.send('Start');
-  
-  // Start polling for reconnection after a delay (since we know WiFi turns off)
-  log('WiFi will be OFF for ~20s. Waiting for device to return...');
-  setTimeout(() => {
-    reconnectTimer = setInterval(() => {
-        log('Attempting to reconnect...');
-        connect();
-    }, 5000);
-  }, 15000); // Wait 15s before even trying to reconnect
+  if (wsConn && wsConn.readyState === 1) {
+    wsConn.send('Start');
+    log('Sent: Start', 'ok');
+  }
+};
+
+$('modeToggle').onchange = function() {
+    const val = this.checked ? 1 : 0;
+    $('lblCough').className = val === 0 ? 'mode-label active' : 'mode-label';
+    $('lblFlow').className = val === 1 ? 'mode-label active' : 'mode-label';
+    log(`Next Download will be marked as: ${val === 1 ? 'FLOW (1)' : 'COUGH (0)'}`, 'data');
+};
+
+$('btnConnect').onclick = () => {
+  if (wsConn && wsConn.readyState === 1) { wsConn.close(); return; }
+  wsConn = new WebSocket(`ws://${$('ipInput').value.trim()}:81`);
+  wsConn.binaryType = 'arraybuffer';
+  wsConn.onopen = () => { setWsState('open'); log('Connected','ok'); };
+  wsConn.onclose = () => { setWsState('closed'); log('Disconnected'); clearInterval(speedTimer); };
+  wsConn.onmessage = onMessage;
 };
 
 $('btnStream').onclick = () => {
@@ -234,7 +218,7 @@ function onMessage(evt) {
       $('sSpeed').textContent = Math.round(receivedCount / el).toLocaleString() + '/s';
       $('sElapsed').textContent = el.toFixed(1) + 's';
     }, 500);
-  } else if (msg.type === 'stream_end' || msg.value === 'stream_finished') {
+  } else if (msg.type === 'stream_end') {
     clearInterval(speedTimer);
     $('btnDownload').disabled = false;
     $('btnVisualize').disabled = false;
@@ -243,9 +227,6 @@ function onMessage(evt) {
     log('Stream Complete','ok');
   } else if (msg.type === 'status') {
     $('sState').textContent = msg.value;
-  } else if (msg.type === 'device_info') {
-      log(`Device returned: ${msg.samples} samples stored. Ready to Stream.`, 'ok');
-      $('sSamples').textContent = msg.samples.toLocaleString();
   }
 }
 
@@ -270,8 +251,8 @@ function handleBinary(buf) {
     samples[b+3] = dv.getUint16(off+8, true);  
     samples[b+4] = dv.getUint16(off+10, true); 
     samples[b+5] = dv.getUint16(off+12, true); 
-    samples[b+6] = dv.getUint16(off+14, true); 
-    samples[b+7] = dv.getUint16(off+16, true); 
+    samples[b+6] = dv.getUint16(off+14, true); // user0
+    samples[b+7] = dv.getUint16(off+16, true); // user1 (raw from device)
     samples[b+8] = dv.getInt16(off+18, true) / 2048.0; 
     samples[b+9] = dv.getInt16(off+20, true) / 2048.0; 
     samples[b+10] = dv.getInt16(off+22, true) / 2048.0; 
@@ -303,22 +284,20 @@ $('btnVisualize').onclick = () => {
   charts.forEach(c => c.destroy()); charts = [];
   const step = Math.max(1, Math.floor(receivedCount / 2000));
   const t = [], a0 = [], a1 = [], a2 = [], a3 = [], a4 = [], imuX = [], imuY = [], imuZ = [], gX = [], gY = [], gZ = [];
-
   for (let i = 0; i < receivedCount; i += step) {
     const b = i * FIELDS;
     t.push((samples[b]/1000000).toFixed(2) + 's');
-    a0.push(samples[b+1]); a1.push(samples[b+2]); a2.push(samples[b+3]); a3.push(samples[b+4]); a4.push(samples[b+5]);
+    a0.push(samples[b+1]); a1.push(samples[b+2]); a2.push(samples[b+3]);
+    a3.push(samples[b+4]); a4.push(samples[b+5]);
     imuX.push(samples[b+8]); imuY.push(samples[b+9]); imuZ.push(samples[b+10]);
     gX.push(samples[b+11]); gY.push(samples[b+12]); gZ.push(samples[b+13]);
   }
-
   const opt = (title) => ({ 
     responsive:true, maintainAspectRatio:false, 
     elements:{point:{radius:0},line:{borderWidth:1.5}},
     plugins: { title: { display:true, text:title, color:'#fff' }, legend: { display: false } },
     scales:{x:{ticks:{maxTicksLimit:10, color:'#334d63'}},y:{grid:{color:'#192130'}, ticks:{color:'#b8cfe0'}}} 
   });
-  
   charts.push(new Chart($('chartAdc0'), { type:'line', data:{ labels:t, datasets:[{label:'ADC0',data:a0,borderColor:'#34d399'}] }, options:opt('ADC CHANNEL 0') }));
   charts.push(new Chart($('chartAdc1'), { type:'line', data:{ labels:t, datasets:[{label:'ADC1',data:a1,borderColor:'#fb923c'}] }, options:opt('ADC CHANNEL 1') }));
   charts.push(new Chart($('chartAdc2'), { type:'line', data:{ labels:t, datasets:[{label:'ADC2',data:a2,borderColor:'#f87171'}] }, options:opt('ADC CHANNEL 2') }));
@@ -341,7 +320,10 @@ $('btnDownload').onclick = () => {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a'); 
   const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  a.href = url; a.download = `daq_${modeName}_${ts}.csv`; a.click();
+  a.href = url; 
+  a.download = `daq_${modeName}_${ts}.csv`; 
+  a.click();
+  log(`Downloaded CSV as ${modeName} mode.`, 'ok');
 };
 </script>
 </body>

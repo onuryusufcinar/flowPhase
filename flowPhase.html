@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>ESP32-S3 DAQ + 192k Sync Mic</title>
+<title>ESP32-S3 DAQ + 192k Sync Mic (300ms Offset)</title>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600;700&family=Syne:wght@400;700;800&display=swap" rel="stylesheet"/>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
@@ -45,7 +45,7 @@ button:disabled{opacity:0.2;cursor:not-allowed}
 .prog-track{height:2px;background:var(--border);overflow:hidden}
 .prog-fill{height:100%;width:0%;background:linear-gradient(90deg,var(--accent),var(--green));transition:width 0.1s}
 #log{background:var(--surface);border:1px solid var(--border);padding:10px;height:120px;overflow-y:auto;font-size:11px;margin-bottom:20px}
-.ll.ok{color:var(--green)}.ll.err{color:var(--red)}
+.ll.ok{color:var(--green)}.ll.err{color:var(--red)}.ll.y{color:var(--yellow)}
 .chart-wrap{display:none;margin-bottom:30px}
 .chart-wrap.show{display:block}
 .chart-container{background:var(--surface);border:1px solid var(--border);margin-bottom:10px;padding:10px;height:250px}
@@ -130,7 +130,7 @@ let sessionTimestamp = "";
 // Audio state
 let audioCtx, mediaStream, processor, audioChunks = [];
 let recordedBuffer = null;
-let isRecording = false;
+let isRecordingActive = false;
 
 function log(msg, cls='') {
   const t = new Date().toLocaleTimeString();
@@ -155,12 +155,12 @@ $('btnConnect').onclick = () => {
   wsConn.onmessage = onMessage;
 };
 
-// 1. SYNC START: Hardware + Mic
+// 1. SYNC START: Hardware Trigger + 300ms Delayed Mic Capture
 $('btnStart').onclick = async () => {
   if (!wsConn || wsConn.readyState !== 1) return;
   
   audioChunks = [];
-  isRecording = true;
+  isRecordingActive = false; // Stay false until 300ms delay ends
   receivedCount = 0;
   
   const now = new Date();
@@ -176,14 +176,23 @@ $('btnStart').onclick = async () => {
     source.connect(processor);
     processor.connect(audioCtx.destination);
 
-    // CRITICAL SYNC POINT
+    // SEND START TO ESP32 IMMEDIATELY
     wsConn.send('Start');
-    log("Sync Start: Sending 'Start' + Mic ON", "ok");
+    log("Command 'Start' sent to ESP32...", "ok");
+    log("Waiting 300ms for hardware initialization...", "y");
+
+    // START MIC DATA COLLECTION AFTER 300ms
+    setTimeout(() => {
+      isRecordingActive = true;
+      log("Mic Data Capture ON (300ms offset active)", "ok");
+    }, 300);
 
     processor.onaudioprocess = (e) => {
-      if (!isRecording) return;
+      if (!isRecordingActive) return;
+
       audioChunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
       
+      // Monitor current total samples
       let currentRawLen = audioChunks.reduce((a, b) => a + b.length, 0);
       let requiredRawLen = (TARGET_SAMPLES / MIC_FREQ) * audioCtx.sampleRate;
 
@@ -192,17 +201,18 @@ $('btnStart').onclick = async () => {
       }
     };
   } catch (e) {
-    log("Mic Access Error: " + e.message, "err");
+    log("Mic Error: " + e.message, "err");
   }
 };
 
 async function stopMicRecording() {
-  if (!isRecording) return;
-  isRecording = false;
+  if (!isRecordingActive) return;
+  isRecordingActive = false;
+  
   if (processor) {
     processor.disconnect();
     mediaStream.getTracks().forEach(t => t.stop());
-    log("Mic Data Captured. Resampling to 192,000 samples...", "ok");
+    log("Mic Capture Finished. Resampling to 192k array...", "ok");
 
     let fullBuffer = new Float32Array(audioChunks.reduce((a, b) => a + b.length, 0));
     let offset = 0;
@@ -222,9 +232,10 @@ async function stopMicRecording() {
     recordedBuffer = new Float32Array(TARGET_SAMPLES);
     for (let i = 0; i < TARGET_SAMPLES; i++) {
       let val = resampled[i] !== undefined ? resampled[i] : 0;
+      // Convert to 12-bit (0-4095)
       recordedBuffer[i] = Math.max(0, Math.min(4095, Math.round((val * 2047) + 2048)));
     }
-    log("Mic Ready: Exactly 192,000 samples.", "ok");
+    log("Mic Buffer Ready: Exactly 192,000 samples.", "ok");
   }
 }
 
@@ -254,7 +265,7 @@ function onMessage(evt) {
     $('btnVisualize').disabled = false;
     $('sState').textContent = 'DONE';
     renderTable();
-    log('Data Stream Complete','ok');
+    log('Binary Stream Complete','ok');
   } else if (msg.type === 'status') {
     $('sState').textContent = msg.value;
   }
@@ -341,12 +352,12 @@ $('btnDownload').onclick = () => {
   for (let i=0; i<TARGET_SAMPLES; i++) {
     const b = i * FIELDS;
     const micVal = recordedBuffer ? recordedBuffer[i] : 0;
-    // Row mapping: Hardware Data + Mic Data at the end of every row
+    // Row construction: ESP32 fields + Resampled Mic data
     s += `${samples[b]||0},${samples[b+1]||0},${samples[b+2]||0},${samples[b+3]||0},${samples[b+4]||0},${samples[b+5]||0},${samples[b+6]||0},${samples[b+7]||0},${(samples[b+8]||0).toFixed(4)},${(samples[b+9]||0).toFixed(4)},${(samples[b+10]||0).toFixed(4)},${(samples[b+11]||0).toFixed(2)},${(samples[b+12]||0).toFixed(2)},${(samples[b+13]||0).toFixed(2)},${micVal}\n`;
   }
   const csvBlob = new Blob([s], {type:'text/csv'});
-  const aCsv = document.createElement('a'); aCsv.href = URL.createObjectURL(csvBlob); aCsv.download = prefix + "_sync.csv"; aCsv.click();
-  log("Downloaded Unified Sync CSV (192,000 rows).", "ok");
+  const aCsv = document.createElement('a'); aCsv.href = URL.createObjectURL(csvBlob); aCsv.download = prefix + "_sync_300ms.csv"; aCsv.click();
+  log("Downloaded Combined CSV (192,000 Rows).", "ok");
 };
 </script>
 </body>

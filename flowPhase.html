@@ -3,47 +3,34 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>ESP32-S3 DAQ + 9600Hz Mic</title>
+<title>ESP32-S3 DAQ + 192k Sync Mic</title>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600;700&family=Syne:wght@400;700;800&display=swap" rel="stylesheet"/>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
 :root {
-  --bg:        #07090e;
-  --surface:   #0c1018;
-  --surface2:  #111822;
-  --border:    #192130;
-  --accent:    #38bdf8;
-  --green:     #34d399;
-  --orange:    #fb923c;
-  --red:       #f87171;
-  --purple:    #a78bfa;
-  --yellow:    #fbbf24;
-  --text:      #b8cfe0;
-  --muted:     #334d63;
-  --grid:      rgba(56,189,248,0.025);
+  --bg: #07090e; --surface: #0c1018; --surface2: #111822; --border: #192130;
+  --accent: #38bdf8; --green: #34d399; --orange: #fb923c; --red: #f87171;
+  --purple: #a78bfa; --yellow: #fbbf24; --text: #b8cfe0; --muted: #334d63;
+  --grid: rgba(56,189,248,0.025);
 }
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--text);font-family:'JetBrains Mono',monospace;font-size:13px;min-height:100vh;position:relative}
 body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;background-image:linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px);background-size:48px 48px}
 .wrap{position:relative;z-index:1;max-width:1200px;margin:0 auto;padding:30px 24px}
-
 header{display:flex;align-items:center;justify-content:space-between;margin-bottom:30px;padding-bottom:20px;border-bottom:1px solid var(--border);flex-wrap:wrap;gap:14px}
 .logo h1{font-family:'Syne',sans-serif;font-size:22px;font-weight:800;color:#fff}
 .logo h1 em{color:var(--accent);font-style:normal}
 .logo p{color:var(--muted);font-size:10px;margin-top:4px;letter-spacing:2.5px;text-transform:uppercase}
-
 .conn-row{display:flex;align-items:center;gap:10px}
 #ipInput{background:var(--surface2);border:1px solid var(--border);border-radius:3px;color:var(--text);padding:7px 12px;width:160px;outline:none}
 .ws-dot{width:8px;height:8px;border-radius:50%;background:var(--muted)}
 .ws-dot.open{background:var(--green);box-shadow:0 0 8px var(--green)}
 .ws-dot.err{background:var(--red)}
-
 .stats{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:20px}
 .stat{background:var(--surface);border:1px solid var(--border);border-radius:5px;padding:13px 14px}
 .sl{font-size:9px;letter-spacing:2px;text-transform:uppercase;color:var(--muted);margin-bottom:6px}
 .sv{font-size:16px;font-weight:700;color:#fff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sv.a{color:var(--accent)}.sv.g{color:var(--green)}.sv.p{color:var(--purple)}.sv.o{color:var(--orange)}.sv.y{color:var(--yellow)}
-
 .controls{display:flex;gap:10px;margin-bottom:20px;flex-wrap:wrap;align-items:center}
 button{font-family:inherit;font-size:11px;font-weight:700;text-transform:uppercase;padding:11px 20px;border-radius:3px;cursor:pointer;background:var(--surface);transition:0.2s}
 button:disabled{opacity:0.2;cursor:not-allowed}
@@ -52,20 +39,16 @@ button:disabled{opacity:0.2;cursor:not-allowed}
 #btnStream{border:1px solid var(--purple);color:var(--purple)}
 #btnDownload{border:1px solid var(--orange);color:var(--orange)}
 #btnVisualize{border:1px solid var(--green);color:var(--green)}
-
 .prog{margin-bottom:20px;display:none}
 .prog.show{display:block}
 .prog-top{display:flex;justify-content:space-between;margin-bottom:6px;font-size:9px;color:var(--muted)}
 .prog-track{height:2px;background:var(--border);overflow:hidden}
 .prog-fill{height:100%;width:0%;background:linear-gradient(90deg,var(--accent),var(--green));transition:width 0.1s}
-
 #log{background:var(--surface);border:1px solid var(--border);padding:10px;height:120px;overflow-y:auto;font-size:11px;margin-bottom:20px}
 .ll.ok{color:var(--green)}.ll.err{color:var(--red)}
-
 .chart-wrap{display:none;margin-bottom:30px}
 .chart-wrap.show{display:block}
 .chart-container{background:var(--surface);border:1px solid var(--border);margin-bottom:10px;padding:10px;height:250px}
-
 .tbl-wrap{display:none}
 .tbl-wrap.show{display:block}
 .tbl-scroll{overflow:auto;max-height:280px;border:1px solid var(--border)}
@@ -80,7 +63,7 @@ tbody td{padding:5px 8px;text-align:right;border-bottom:1px solid var(--border);
   <header>
     <div class="logo">
       <h1>ESP32<em>·</em>DAQ</h1>
-      <p>ICM42670 + LTC2351 + 9600Hz 12-Bit MIC</p>
+      <p>ICM42670 + LTC2351 + 192k SYNC MIC</p>
     </div>
     <div class="conn-row">
       <input id="ipInput" type="text" value="10.42.89.182">
@@ -100,7 +83,7 @@ tbody td{padding:5px 8px;text-align:right;border-bottom:1px solid var(--border);
 
   <div class="controls">
     <button id="btnConnect">⬡ Connect</button>
-    <button id="btnStart" disabled>▶ Start</button>
+    <button id="btnStart" disabled>▶ Start Sync</button>
     <button id="btnStream" disabled>⇄ Stream</button>
     <button id="btnDownload" disabled>↓ Save Files</button>
     <button id="btnVisualize" disabled>📈 Visualize</button>
@@ -136,14 +119,18 @@ tbody td{padding:5px 8px;text-align:right;border-bottom:1px solid var(--border);
 
 <script>
 const $ = id => document.getElementById(id);
-let wsConn = null, samples = null, totalExpected = 0, receivedCount = 0, pktsReceived = 0;
-let streamStartTime = 0, speedTimer = null, charts = [];
-let sessionTimestamp = "";
+const TARGET_SAMPLES = 192000;
+const MIC_FREQ = 9600;
 const FIELDS = 14;
 
-// Audio Variables
+let wsConn = null, samples = null, receivedCount = 0, pktsReceived = 0;
+let streamStartTime = 0, speedTimer = null, charts = [];
+let sessionTimestamp = "";
+
+// Audio state
 let audioCtx, mediaStream, processor, audioChunks = [];
 let recordedBuffer = null;
+let isRecording = false;
 
 function log(msg, cls='') {
   const t = new Date().toLocaleTimeString();
@@ -159,85 +146,6 @@ function setWsState(s) {
   $('btnStart').disabled = !isOpen;
 }
 
-async function startMicRecording() {
-  audioChunks = [];
-  try {
-    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    audioCtx = new AudioContext();
-    const source = audioCtx.createMediaStreamSource(mediaStream);
-    processor = audioCtx.createScriptProcessor(4096, 1, 1);
-
-    source.connect(processor);
-    processor.connect(audioCtx.destination);
-
-    processor.onaudioprocess = (e) => {
-      audioChunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
-    };
-
-    log("Mic Recording Started (20s)...", "ok");
-    setTimeout(() => stopMicRecording(), 20000);
-  } catch (err) {
-    log("Mic Error: " + err.message, "err");
-  }
-}
-
-async function stopMicRecording() {
-  if (processor) {
-    processor.disconnect();
-    mediaStream.getTracks().forEach(t => t.stop());
-    
-    // Flatten original chunks
-    let totalLen = audioChunks.reduce((acc, curr) => acc + curr.length, 0);
-    let fullBuffer = new Float32Array(totalLen);
-    let offset = 0;
-    for (let chunk of audioChunks) {
-      fullBuffer.set(chunk, offset);
-      offset += chunk.length;
-    }
-
-    // Resample to 9600 Hz
-    const targetRate = 9600;
-    const duration = fullBuffer.length / audioCtx.sampleRate;
-    const offlineCtx = new OfflineAudioContext(1, Math.ceil(duration * targetRate), targetRate);
-    
-    const bufferSource = offlineCtx.createBufferSource();
-    const audioBuffer = offlineCtx.createBuffer(1, fullBuffer.length, audioCtx.sampleRate);
-    audioBuffer.copyToChannel(fullBuffer, 0);
-    
-    bufferSource.buffer = audioBuffer;
-    bufferSource.connect(offlineCtx.destination);
-    bufferSource.start();
-    
-    const renderedBuffer = await offlineCtx.startRendering();
-    const resampledData = renderedBuffer.getChannelData(0);
-
-    // Map to 12-bit (0-4095), mean 2048
-    recordedBuffer = new Float32Array(resampledData.length);
-    for (let i = 0; i < resampledData.length; i++) {
-      let scaled = (resampledData[i] * 2047) + 2048;
-      recordedBuffer[i] = Math.max(0, Math.min(4095, Math.round(scaled)));
-    }
-    log(`Mic Data Ready. Sampling: 9600Hz. Range: 0-4095.`, "ok");
-  }
-}
-
-$('btnStart').onclick = async () => {
-  if (wsConn && wsConn.readyState === 1) {
-    const now = new Date();
-    $('sStart').textContent = now.toLocaleTimeString();
-    sessionTimestamp = now.getFullYear() + "-" + 
-                       String(now.getMonth() + 1).padStart(2, '0') + "-" + 
-                       String(now.getDate()).padStart(2, '0') + "_" + 
-                       String(now.getHours()).padStart(2, '0') + "-" + 
-                       String(now.getMinutes()).padStart(2, '0') + "-" + 
-                       String(now.getSeconds()).padStart(2, '0');
-    
-    wsConn.send('Start');
-    log('Sent: Start', 'ok');
-    await startMicRecording();
-  }
-};
-
 $('btnConnect').onclick = () => {
   if (wsConn && wsConn.readyState === 1) { wsConn.close(); return; }
   wsConn = new WebSocket(`ws://${$('ipInput').value.trim()}:81`);
@@ -246,6 +154,79 @@ $('btnConnect').onclick = () => {
   wsConn.onclose = () => { setWsState('closed'); log('Disconnected'); clearInterval(speedTimer); };
   wsConn.onmessage = onMessage;
 };
+
+// 1. SYNC START: Hardware + Mic
+$('btnStart').onclick = async () => {
+  if (!wsConn || wsConn.readyState !== 1) return;
+  
+  audioChunks = [];
+  isRecording = true;
+  receivedCount = 0;
+  
+  const now = new Date();
+  $('sStart').textContent = now.toLocaleTimeString();
+  sessionTimestamp = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}_${String(now.getHours()).padStart(2,'0')}-${String(now.getMinutes()).padStart(2,'0')}-${String(now.getSeconds()).padStart(2,'0')}`;
+
+  try {
+    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    audioCtx = new AudioContext();
+    const source = audioCtx.createMediaStreamSource(mediaStream);
+    processor = audioCtx.createScriptProcessor(4096, 1, 1);
+    
+    source.connect(processor);
+    processor.connect(audioCtx.destination);
+
+    // CRITICAL SYNC POINT
+    wsConn.send('Start');
+    log("Sync Start: Sending 'Start' + Mic ON", "ok");
+
+    processor.onaudioprocess = (e) => {
+      if (!isRecording) return;
+      audioChunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+      
+      let currentRawLen = audioChunks.reduce((a, b) => a + b.length, 0);
+      let requiredRawLen = (TARGET_SAMPLES / MIC_FREQ) * audioCtx.sampleRate;
+
+      if (currentRawLen >= requiredRawLen) {
+        stopMicRecording();
+      }
+    };
+  } catch (e) {
+    log("Mic Access Error: " + e.message, "err");
+  }
+};
+
+async function stopMicRecording() {
+  if (!isRecording) return;
+  isRecording = false;
+  if (processor) {
+    processor.disconnect();
+    mediaStream.getTracks().forEach(t => t.stop());
+    log("Mic Data Captured. Resampling to 192,000 samples...", "ok");
+
+    let fullBuffer = new Float32Array(audioChunks.reduce((a, b) => a + b.length, 0));
+    let offset = 0;
+    for (let chunk of audioChunks) { fullBuffer.set(chunk, offset); offset += chunk.length; }
+
+    const offlineCtx = new OfflineAudioContext(1, TARGET_SAMPLES, MIC_FREQ);
+    const bufferSource = offlineCtx.createBufferSource();
+    const audioBuffer = offlineCtx.createBuffer(1, fullBuffer.length, audioCtx.sampleRate);
+    audioBuffer.copyToChannel(fullBuffer, 0);
+    bufferSource.buffer = audioBuffer;
+    bufferSource.connect(offlineCtx.destination);
+    bufferSource.start();
+
+    const rendered = await offlineCtx.startRendering();
+    const resampled = rendered.getChannelData(0);
+
+    recordedBuffer = new Float32Array(TARGET_SAMPLES);
+    for (let i = 0; i < TARGET_SAMPLES; i++) {
+      let val = resampled[i] !== undefined ? resampled[i] : 0;
+      recordedBuffer[i] = Math.max(0, Math.min(4095, Math.round((val * 2047) + 2048)));
+    }
+    log("Mic Ready: Exactly 192,000 samples.", "ok");
+  }
+}
 
 $('btnStream').onclick = () => {
   receivedCount = 0; pktsReceived = 0; samples = null;
@@ -260,8 +241,7 @@ function onMessage(evt) {
   if (evt.data instanceof ArrayBuffer) { handleBinary(evt.data); return; }
   const msg = JSON.parse(evt.data);
   if (msg.type === 'stream_start') {
-    totalExpected = parseInt(msg.value);
-    samples = new Float32Array(totalExpected * FIELDS);
+    samples = new Float32Array(TARGET_SAMPLES * FIELDS);
     streamStartTime = performance.now();
     speedTimer = setInterval(() => {
       const el = (performance.now() - streamStartTime) / 1000;
@@ -274,7 +254,7 @@ function onMessage(evt) {
     $('btnVisualize').disabled = false;
     $('sState').textContent = 'DONE';
     renderTable();
-    log('Stream Complete','ok');
+    log('Data Stream Complete','ok');
   } else if (msg.type === 'status') {
     $('sState').textContent = msg.value;
   }
@@ -291,7 +271,7 @@ function handleBinary(buf) {
   let off = 4;
   for (let i = 0; i < count; i++) {
     const si = baseIdx + i;
-    if (si >= totalExpected) break;
+    if (si >= TARGET_SAMPLES) break;
     const b = si * FIELDS;
     samples[b+0] = dv.getUint32(off, true);
     samples[b+1] = dv.getUint16(off+4, true);  
@@ -311,13 +291,13 @@ function handleBinary(buf) {
     receivedCount = Math.max(receivedCount, si + 1);
   }
   $('sSamples').textContent = receivedCount.toLocaleString();
-  const pct = Math.round((receivedCount/totalExpected)*100);
+  const pct = Math.round((receivedCount/TARGET_SAMPLES)*100);
   $('progFill').style.width = pct + '%';
   $('progPct').textContent = pct + '%';
 }
 
 function renderTable() {
-  const start = Math.max(0, receivedCount - 200);
+  const start = Math.max(0, receivedCount - 100);
   let h = '';
   for (let i = start; i < receivedCount; i++) {
     const b = i * FIELDS;
@@ -330,7 +310,7 @@ $('btnVisualize').onclick = () => {
   $('chartWrap').classList.add('show');
   charts.forEach(c => c.destroy()); charts = [];
   const step = Math.max(1, Math.floor(receivedCount / 2000));
-  const t = [], a0 = [], a1 = [], a2 = [], a3 = [], a4 = [], imuX = [], imuY = [], imuZ = [], gX = [], gY = [], gZ = [];
+  const t=[], a0=[], a1=[], a2=[], a3=[], a4=[], imuX=[], imuY=[], imuZ=[], gX=[], gY=[], gZ=[];
   for (let i = 0; i < receivedCount; i += step) {
     const b = i * FIELDS;
     t.push((samples[b]/1000000).toFixed(2) + 's');
@@ -339,56 +319,34 @@ $('btnVisualize').onclick = () => {
     imuX.push(samples[b+8]); imuY.push(samples[b+9]); imuZ.push(samples[b+10]);
     gX.push(samples[b+11]); gY.push(samples[b+12]); gZ.push(samples[b+13]);
   }
-  const opt = (title) => ({ 
-    responsive:true, maintainAspectRatio:false, 
-    elements:{point:{radius:0},line:{borderWidth:1.5}},
-    plugins: { title: { display:true, text:title, color:'#fff' }, legend: { display: false } },
-    scales:{x:{ticks:{maxTicksLimit:10, color:'#334d63'}},y:{grid:{color:'#192130'}, ticks:{color:'#b8cfe0'}}} 
-  });
-  
-  charts.push(new Chart($('chartAdc0'), { type:'line', data:{ labels:t, datasets:[{label:'ADC0',data:a0,borderColor:'#34d399'}] }, options:opt('ADC CHANNEL 0') }));
-  charts.push(new Chart($('chartAdc1'), { type:'line', data:{ labels:t, datasets:[{label:'ADC1',data:a1,borderColor:'#fb923c'}] }, options:opt('ADC CHANNEL 1') }));
-  charts.push(new Chart($('chartAdc2'), { type:'line', data:{ labels:t, datasets:[{label:'ADC2',data:a2,borderColor:'#f87171'}] }, options:opt('ADC CHANNEL 2') }));
-  charts.push(new Chart($('chartAdc3'), { type:'line', data:{ labels:t, datasets:[{label:'ADC3',data:a3,borderColor:'#a78bfa'}] }, options:opt('ADC CHANNEL 3') }));
-  charts.push(new Chart($('chartAdc4'), { type:'line', data:{ labels:t, datasets:[{label:'ADC4',data:a4,borderColor:'#fbbf24'}] }, options:opt('ADC CHANNEL 4') }));
-  charts.push(new Chart($('chartImu'),  { type:'line', data:{ labels:t, datasets:[{label:'AX',data:imuX,borderColor:'#38bdf8'},{label:'AY',data:imuY,borderColor:'#34d399'},{label:'AZ',data:imuZ,borderColor:'#fb923c'}] }, options:{...opt('ACCELEROMETER (g)'), plugins:{title:{display:true,text:'ACCELEROMETER (g)',color:'#fff'},legend:{display:true,labels:{color:'#b8cfe0'}}}} }));
-  charts.push(new Chart($('chartGyro'), { type:'line', data:{ labels:t, datasets:[{label:'GX',data:gX,borderColor:'#a78bfa'},{label:'GY',data:gY,borderColor:'#fbbf24'},{label:'GZ',data:gZ,borderColor:'#f87171'}] }, options:{...opt('GYROSCOPE (dps)'), plugins:{title:{display:true,text:'GYROSCOPE (dps)',color:'#fff'},legend:{display:true,labels:{color:'#b8cfe0'}}}} }));
-  
-  // Audio Visualization
+  const opt = (title) => ({ responsive:true, maintainAspectRatio:false, elements:{point:{radius:0},line:{borderWidth:1}}, plugins:{title:{display:true,text:title,color:'#fff'},legend:{display:false}}, scales:{x:{ticks:{maxTicksLimit:10,color:'#334d63'}},y:{grid:{color:'#192130'},ticks:{color:'#b8cfe0'}}}});
+  charts.push(new Chart($('chartAdc0'), { type:'line', data:{ labels:t, datasets:[{data:a0,borderColor:'#34d399'}] }, options:opt('ADC0') }));
+  charts.push(new Chart($('chartAdc1'), { type:'line', data:{ labels:t, datasets:[{data:a1,borderColor:'#fb923c'}] }, options:opt('ADC1') }));
+  charts.push(new Chart($('chartAdc2'), { type:'line', data:{ labels:t, datasets:[{data:a2,borderColor:'#f87171'}] }, options:opt('ADC2') }));
+  charts.push(new Chart($('chartAdc3'), { type:'line', data:{ labels:t, datasets:[{data:a3,borderColor:'#a78bfa'}] }, options:opt('ADC3') }));
+  charts.push(new Chart($('chartAdc4'), { type:'line', data:{ labels:t, datasets:[{data:a4,borderColor:'#fbbf24'}] }, options:opt('ADC4') }));
+  charts.push(new Chart($('chartImu'),  { type:'line', data:{ labels:t, datasets:[{label:'AX',data:imuX,borderColor:'#38bdf8'},{label:'AY',data:imuY,borderColor:'#34d399'},{label:'AZ',data:imuZ,borderColor:'#fb923c'}] }, options:{...opt('ACCEL'),plugins:{legend:{display:true,labels:{color:'#fff'}}}} }));
+  charts.push(new Chart($('chartGyro'), { type:'line', data:{ labels:t, datasets:[{label:'GX',data:gX,borderColor:'#a78bfa'},{label:'GY',data:gY,borderColor:'#fbbf24'},{label:'GZ',data:gZ,borderColor:'#f87171'}] }, options:{...opt('GYRO'),plugins:{legend:{display:true,labels:{color:'#fff'}}}} }));
   if (recordedBuffer) {
-    const micData = [], micLabels = [];
-    const stepMic = Math.floor(recordedBuffer.length / 2000);
-    for (let i = 0; i < recordedBuffer.length; i += stepMic) {
-      micData.push(recordedBuffer[i]);
-      micLabels.push("");
-    }
-    charts.push(new Chart($('chartMic'), { type:'line', data:{ labels:micLabels, datasets:[{label:'Mic (12-bit)',data:micData,borderColor:'#f87171'}] }, options:opt('MICROPHONE (9600Hz, 12-bit)') }));
+    let mD=[], mL=[]; let mStep = Math.floor(recordedBuffer.length/2000);
+    for(let i=0;i<recordedBuffer.length;i+=mStep){ mD.push(recordedBuffer[i]); mL.push(""); }
+    charts.push(new Chart($('chartMic'), { type:'line', data:{ labels:mL, datasets:[{data:mD,borderColor:'#f87171'}] }, options:opt('MIC (SYNC 192k)') }));
   }
 };
 
 $('btnDownload').onclick = () => {
   if (!samples || receivedCount === 0) return;
   const prefix = sessionTimestamp || "daq_data";
-
-  // 1. Download CSV
-  let s = 'timestamp_us,adc0,adc1,adc2,adc3,adc4,user0,user1,ax,ay,az,gx,gy,gz\n';
-  for (let i=0; i<receivedCount; i++) {
+  let s = 'ts_us,adc0,adc1,adc2,adc3,adc4,u0,u1,ax,ay,az,gx,gy,gz,mic_12bit\n';
+  for (let i=0; i<TARGET_SAMPLES; i++) {
     const b = i * FIELDS;
-    s += `${samples[b]},${samples[b+1]},${samples[b+2]},${samples[b+3]},${samples[b+4]},${samples[b+5]},${samples[b+6]},${samples[b+7]},${samples[b+8].toFixed(4)},${samples[b+9].toFixed(4)},${samples[b+10].toFixed(4)},${samples[b+11].toFixed(2)},${samples[b+12].toFixed(2)},${samples[b+13].toFixed(2)}\n`;
+    const micVal = recordedBuffer ? recordedBuffer[i] : 0;
+    // Row mapping: Hardware Data + Mic Data at the end of every row
+    s += `${samples[b]||0},${samples[b+1]||0},${samples[b+2]||0},${samples[b+3]||0},${samples[b+4]||0},${samples[b+5]||0},${samples[b+6]||0},${samples[b+7]||0},${(samples[b+8]||0).toFixed(4)},${(samples[b+9]||0).toFixed(4)},${(samples[b+10]||0).toFixed(4)},${(samples[b+11]||0).toFixed(2)},${(samples[b+12]||0).toFixed(2)},${(samples[b+13]||0).toFixed(2)},${micVal}\n`;
   }
   const csvBlob = new Blob([s], {type:'text/csv'});
-  const aCsv = document.createElement('a'); aCsv.href = URL.createObjectURL(csvBlob); aCsv.download = prefix + ".csv"; aCsv.click();
-
-  // 2. Download 12-bit Audio TXT
-  if (recordedBuffer) {
-    const audioString = recordedBuffer.join('\n');
-    const audioBlob = new Blob([audioString], {type:'text/plain'});
-    const aAudio = document.createElement('a');
-    aAudio.href = URL.createObjectURL(audioBlob);
-    aAudio.download = prefix + "_mic_12bit.txt";
-    aAudio.click();
-    log("Saved CSV and 12-bit Audio Data.", "ok");
-  }
+  const aCsv = document.createElement('a'); aCsv.href = URL.createObjectURL(csvBlob); aCsv.download = prefix + "_sync.csv"; aCsv.click();
+  log("Downloaded Unified Sync CSV (192,000 rows).", "ok");
 };
 </script>
 </body>

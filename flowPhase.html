@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>ESP32-S3 DAQ + 192k Mic WAV Export</title>
+<title>ESP32-S3 DAQ + 44.1k 20s WAV Export</title>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600;700&family=Syne:wght@400;700;800&display=swap" rel="stylesheet"/>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
@@ -31,7 +31,7 @@ header{display:flex;align-items:center;justify-content:space-between;margin-bott
 .stats{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:20px}
 .stat{background:var(--surface);border:1px solid var(--border);border-radius:5px;padding:13px 14px}
 .sl{font-size:9px;letter-spacing:2px;text-transform:uppercase;color:var(--muted);margin-bottom:6px}
-.sv{font-size:16px;font-weight:700;color:#fff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sv{font-size:16px;font-weight:700;color:#fff;white-space:nowrap}
 .sv.a{color:var(--accent)}.sv.g{color:var(--green)}.sv.p{color:var(--purple)}.sv.o{color:var(--orange)}.sv.y{color:var(--yellow)}
 .controls{display:flex;gap:10px;margin-bottom:20px;flex-wrap:wrap;align-items:center}
 button{font-family:inherit;font-size:11px;font-weight:700;text-transform:uppercase;padding:11px 20px;border-radius:3px;cursor:pointer;background:var(--surface);transition:0.2s}
@@ -65,7 +65,7 @@ tbody td{padding:5px 8px;text-align:right;border-bottom:1px solid var(--border);
   <header>
     <div class="logo">
       <h1>ESP32<em>·</em>DAQ</h1>
-      <p>ICM42670 + LTC2351 + 192k WAV EXPORT</p>
+      <p>ICM42670 + LTC2351 + 44.1kHz 20s WAV</p>
     </div>
     <div class="conn-row">
       <span style="font-size:9px; color:var(--muted); text-transform:uppercase">Offset(ms):</span>
@@ -94,7 +94,7 @@ tbody td{padding:5px 8px;text-align:right;border-bottom:1px solid var(--border);
   </div>
 
   <div class="prog" id="prog">
-    <div class="prog-top"><span id="progLabel">Streaming</span><span id="progPct">0%</span></div>
+    <div class="prog-top"><span id="progLabel">Recording Mic</span><span id="progPct">0%</span></div>
     <div class="prog-track"><div class="prog-fill" id="progFill"></div></div>
   </div>
 
@@ -123,17 +123,19 @@ tbody td{padding:5px 8px;text-align:right;border-bottom:1px solid var(--border);
 
 <script>
 const $ = id => document.getElementById(id);
-const TARGET_SAMPLES = 192000;
-const MIC_FREQ = 9600; // Sample rate for the output WAV
+const HW_SAMPLES = 192000;
+const RECORD_DURATION_SEC = 20; 
+const WAV_SAMPLE_RATE = 44100;
+const TARGET_WAV_SAMPLES = RECORD_DURATION_SEC * WAV_SAMPLE_RATE;
 const FIELDS = 14;
 
-let wsConn = null, samples = null, receivedCount = 0, pktsReceived = 0;
+let wsConn = null, hwSamplesData = null, receivedCount = 0, pktsReceived = 0;
 let streamStartTime = 0, speedTimer = null, charts = [];
 let sessionTimestamp = "";
 
 // Audio state
 let audioCtx, mediaStream, processor, audioChunks = [];
-let recordedRawFloat = null; // Storing raw float for WAV conversion
+let recordedRawFloat = null;
 let isRecordingActive = false;
 
 function log(msg, cls='') {
@@ -175,25 +177,34 @@ $('btnStart').onclick = async () => {
     mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     audioCtx = new AudioContext();
     const source = audioCtx.createMediaStreamSource(mediaStream);
+    // Buffer size 4096 for stability
     processor = audioCtx.createScriptProcessor(4096, 1, 1);
     
     source.connect(processor);
     processor.connect(audioCtx.destination);
 
     wsConn.send('Start');
-    log("Command 'Start' sent to ESP32...", "ok");
+    log(`ESP32 Triggered. Recording starts in ${userDelay}ms...`, "y");
+    $('prog').classList.add('show');
 
     setTimeout(() => {
       isRecordingActive = true;
-      log(`Mic Capture ON (${userDelay}ms offset)`, "ok");
+      log(`Mic Capture STARTED (Target: ${RECORD_DURATION_SEC}s)`, "ok");
     }, userDelay);
 
     processor.onaudioprocess = (e) => {
       if (!isRecordingActive) return;
-      audioChunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
-      let currentRawLen = audioChunks.reduce((a, b) => a + b.length, 0);
-      let requiredRawLen = (TARGET_SAMPLES / MIC_FREQ) * audioCtx.sampleRate;
-      if (currentRawLen >= requiredRawLen) stopMicRecording();
+      const inputData = e.inputBuffer.getChannelData(0);
+      audioChunks.push(new Float32Array(inputData));
+      
+      let currentCaptured = audioChunks.reduce((a, b) => a + b.length, 0);
+      let progress = Math.min(100, (currentCaptured / (audioCtx.sampleRate * RECORD_DURATION_SEC)) * 100);
+      $('progFill').style.width = progress + '%';
+      $('progPct').textContent = Math.round(progress) + '%';
+
+      if (currentCaptured >= audioCtx.sampleRate * RECORD_DURATION_SEC) {
+        stopMicRecording();
+      }
     };
   } catch (e) {
     log("Mic Error: " + e.message, "err");
@@ -207,13 +218,14 @@ async function stopMicRecording() {
   if (processor) {
     processor.disconnect();
     mediaStream.getTracks().forEach(t => t.stop());
-    log("Resampling Mic data...", "ok");
+    log("Processing 20s audio buffer...", "y");
 
     let fullBuffer = new Float32Array(audioChunks.reduce((a, b) => a + b.length, 0));
     let offset = 0;
     for (let chunk of audioChunks) { fullBuffer.set(chunk, offset); offset += chunk.length; }
 
-    const offlineCtx = new OfflineAudioContext(1, TARGET_SAMPLES, MIC_FREQ);
+    // Resample to 44.1kHz
+    const offlineCtx = new OfflineAudioContext(1, TARGET_WAV_SAMPLES, WAV_SAMPLE_RATE);
     const bufferSource = offlineCtx.createBufferSource();
     const audioBuffer = offlineCtx.createBuffer(1, fullBuffer.length, audioCtx.sampleRate);
     audioBuffer.copyToChannel(fullBuffer, 0);
@@ -223,13 +235,14 @@ async function stopMicRecording() {
 
     const rendered = await offlineCtx.startRendering();
     recordedRawFloat = rendered.getChannelData(0);
-    log("Mic WAV Buffer Ready.", "ok");
+    log(`Success: 20s WAV @ ${WAV_SAMPLE_RATE}Hz ready.`, "ok");
   }
 }
 
 $('btnStream').onclick = () => {
-  receivedCount = 0; pktsReceived = 0; samples = null;
+  receivedCount = 0; pktsReceived = 0; hwSamplesData = null;
   $('tbody').innerHTML = '';
+  $('progLabel').textContent = "Streaming HW Data";
   $('prog').classList.add('show');
   $('tblWrap').classList.add('show');
   $('chartWrap').classList.remove('show');
@@ -240,7 +253,7 @@ function onMessage(evt) {
   if (evt.data instanceof ArrayBuffer) { handleBinary(evt.data); return; }
   const msg = JSON.parse(evt.data);
   if (msg.type === 'stream_start') {
-    samples = new Float32Array(TARGET_SAMPLES * FIELDS);
+    hwSamplesData = new Float32Array(HW_SAMPLES * FIELDS);
     streamStartTime = performance.now();
     speedTimer = setInterval(() => {
       const el = (performance.now() - streamStartTime) / 1000;
@@ -253,7 +266,7 @@ function onMessage(evt) {
     $('btnVisualize').disabled = false;
     $('sState').textContent = 'DONE';
     renderTable();
-    log('Stream Complete','ok');
+    log('HW Data Stream Complete','ok');
   } else if (msg.type === 'status') {
     $('sState').textContent = msg.value;
   }
@@ -263,34 +276,34 @@ function handleBinary(buf) {
   const dv = new DataView(buf);
   const seq = dv.getUint16(0, true);
   const count = dv.getUint16(2, true);
-  if (!samples) return;
+  if (!hwSamplesData) return;
   pktsReceived++;
   $('sPkts').textContent = pktsReceived.toLocaleString();
   const baseIdx = seq * 50;
   let off = 4;
   for (let i = 0; i < count; i++) {
     const si = baseIdx + i;
-    if (si >= TARGET_SAMPLES) break;
+    if (si >= HW_SAMPLES) break;
     const b = si * FIELDS;
-    samples[b+0] = dv.getUint32(off, true);
-    samples[b+1] = dv.getUint16(off+4, true);  
-    samples[b+2] = dv.getUint16(off+6, true);  
-    samples[b+3] = dv.getUint16(off+8, true);  
-    samples[b+4] = dv.getUint16(off+10, true); 
-    samples[b+5] = dv.getUint16(off+12, true); 
-    samples[b+6] = dv.getUint16(off+14, true); 
-    samples[b+7] = dv.getUint16(off+16, true); 
-    samples[b+8] = dv.getInt16(off+18, true) / 2048.0; 
-    samples[b+9] = dv.getInt16(off+20, true) / 2048.0; 
-    samples[b+10] = dv.getInt16(off+22, true) / 2048.0; 
-    samples[b+11] = dv.getInt16(off+24, true) / 16.4;   
-    samples[b+12] = dv.getInt16(off+26, true) / 16.4;   
-    samples[b+13] = dv.getInt16(off+28, true) / 16.4;   
+    hwSamplesData[b+0] = dv.getUint32(off, true);
+    hwSamplesData[b+1] = dv.getUint16(off+4, true);  
+    hwSamplesData[b+2] = dv.getUint16(off+6, true);  
+    hwSamplesData[b+3] = dv.getUint16(off+8, true);  
+    hwSamplesData[b+4] = dv.getUint16(off+10, true); 
+    hwSamplesData[b+5] = dv.getUint16(off+12, true); 
+    hwSamplesData[b+6] = dv.getUint16(off+14, true); 
+    hwSamplesData[b+7] = dv.getUint16(off+16, true); 
+    hwSamplesData[b+8] = dv.getInt16(off+18, true) / 2048.0; 
+    hwSamplesData[b+9] = dv.getInt16(off+20, true) / 2048.0; 
+    hwSamplesData[b+10] = dv.getInt16(off+22, true) / 2048.0; 
+    hwSamplesData[b+11] = dv.getInt16(off+24, true) / 16.4;   
+    hwSamplesData[b+12] = dv.getInt16(off+26, true) / 16.4;   
+    hwSamplesData[b+13] = dv.getInt16(off+28, true) / 16.4;   
     off += 30;
     receivedCount = Math.max(receivedCount, si + 1);
   }
   $('sSamples').textContent = receivedCount.toLocaleString();
-  const pct = Math.round((receivedCount/TARGET_SAMPLES)*100);
+  const pct = Math.round((receivedCount/HW_SAMPLES)*100);
   $('progFill').style.width = pct + '%';
   $('progPct').textContent = pct + '%';
 }
@@ -300,29 +313,31 @@ function renderTable() {
   let h = '';
   for (let i = start; i < receivedCount; i++) {
     const b = i * FIELDS;
-    h += `<tr><td>${i+1}</td><td>${samples[b]}</td><td>${samples[b+1]}</td><td>${samples[b+2]}</td><td>${samples[b+3]}</td><td>${samples[b+4]}</td><td>${samples[b+5]}</td><td>${samples[b+6]}</td><td>${samples[b+7]}</td><td>${samples[b+8].toFixed(2)}</td><td>${samples[b+9].toFixed(2)}</td><td>${samples[b+10].toFixed(2)}</td><td>${samples[b+11].toFixed(1)}</td><td>${samples[b+12].toFixed(1)}</td><td>${samples[b+13].toFixed(1)}</td></tr>`;
+    h += `<tr><td>${i+1}</td><td>${hwSamplesData[b]}</td><td>${hwSamplesData[b+1]}</td><td>${hwSamplesData[b+2]}</td><td>${hwSamplesData[b+3]}</td><td>${hwSamplesData[b+4]}</td><td>${hwSamplesData[b+5]}</td><td>${hwSamplesData[b+6]}</td><td>${hwSamplesData[b+7]}</td><td>${hwSamplesData[b+8].toFixed(2)}</td><td>${hwSamplesData[b+9].toFixed(2)}</td><td>${hwSamplesData[b+10].toFixed(2)}</td><td>${hwSamplesData[b+11].toFixed(1)}</td><td>${hwSamplesData[b+12].toFixed(1)}</td><td>${hwSamplesData[b+13].toFixed(1)}</td></tr>`;
   }
   $('tbody').innerHTML = h;
 }
 
-// Helper: WAV Encoder
+// Fixed WAV Encoder for 16-bit PCM
 function encodeWAV(samples, sampleRate) {
   let buffer = new ArrayBuffer(44 + samples.length * 2);
   let view = new DataView(buffer);
   const writeString = (view, offset, string) => { for (let i = 0; i < string.length; i++) view.setUint8(offset + i, string.charCodeAt(i)); };
+  
   writeString(view, 0, 'RIFF');
   view.setUint32(4, 32 + samples.length * 2, true);
   writeString(view, 8, 'WAVE');
   writeString(view, 12, 'fmt ');
   view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, 1, true);
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, 1, true); // Mono
   view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * 2, true);
-  view.setUint16(32, 2, true);
-  view.setUint16(34, 16, true);
+  view.setUint32(28, sampleRate * 2, true); // Byte rate
+  view.setUint16(32, 2, true); // Block align
+  view.setUint16(34, 16, true); // Bits per sample
   writeString(view, 36, 'data');
   view.setUint32(40, samples.length * 2, true);
+
   let offset = 44;
   for (let i = 0; i < samples.length; i++, offset += 2) {
     let s = Math.max(-1, Math.min(1, samples[i]));
@@ -332,25 +347,25 @@ function encodeWAV(samples, sampleRate) {
 }
 
 $('btnDownload').onclick = () => {
-  if (!samples || receivedCount === 0) return;
+  if (!hwSamplesData || receivedCount === 0) return;
   const prefix = sessionTimestamp || "daq_data";
   const userDelayMs = $('delayInput').value || "0";
 
-  // 1. Download Hardware CSV (No Mic Columns)
+  // 1. Hardware CSV
   let s = 'ts_us,adc0,adc1,adc2,adc3,adc4,u0,u1,ax,ay,az,gx,gy,gz\n';
-  for (let i = 0; i < TARGET_SAMPLES; i++) {
+  for (let i = 0; i < HW_SAMPLES; i++) {
     const b = i * FIELDS;
-    s += `${samples[b]||0},${samples[b+1]||0},${samples[b+2]||0},${samples[b+3]||0},${samples[b+4]||0},${samples[b+5]||0},${samples[b+6]||0},${samples[b+7]||0},${(samples[b+8]||0).toFixed(4)},${(samples[b+9]||0).toFixed(4)},${(samples[b+10]||0).toFixed(4)},${(samples[b+11]||0).toFixed(2)},${(samples[b+12]||0).toFixed(2)},${(samples[b+13]||0).toFixed(2)}\n`;
+    s += `${hwSamplesData[b]||0},${hwSamplesData[b+1]||0},${hwSamplesData[b+2]||0},${hwSamplesData[b+3]||0},${hwSamplesData[b+4]||0},${hwSamplesData[b+5]||0},${hwSamplesData[b+6]||0},${hwSamplesData[b+7]||0},${(hwSamplesData[b+8]||0).toFixed(4)},${(hwSamplesData[b+9]||0).toFixed(4)},${(hwSamplesData[b+10]||0).toFixed(4)},${(hwSamplesData[b+11]||0).toFixed(2)},${(hwSamplesData[b+12]||0).toFixed(2)},${(hwSamplesData[b+13]||0).toFixed(2)}\n`;
   }
   const csvBlob = new Blob([s], {type:'text/csv'});
-  const aCsv = document.createElement('a'); aCsv.href = URL.createObjectURL(csvBlob); aCsv.download = `${prefix}_hw.csv`; aCsv.click();
+  const aCsv = document.createElement('a'); aCsv.href = URL.createObjectURL(csvBlob); aCsv.download = `${prefix}_hardware.csv`; aCsv.click();
 
-  // 2. Download WAV File
+  // 2. 20-Second High Frequency WAV
   if (recordedRawFloat) {
-    const wavBlob = encodeWAV(recordedRawFloat, MIC_FREQ);
-    const aWav = document.createElement('a'); aWav.href = URL.createObjectURL(wavBlob); aWav.download = `${prefix}_mic_${userDelayMs}ms_offset.wav`; aWav.click();
+    const wavBlob = encodeWAV(recordedRawFloat, WAV_SAMPLE_RATE);
+    const aWav = document.createElement('a'); aWav.href = URL.createObjectURL(wavBlob); aWav.download = `${prefix}_mic_20s_${userDelayMs}ms_offset.wav`; aWav.click();
   }
-  log(`Exported CSV and WAV with ${userDelayMs}ms offset note.`, "ok");
+  log(`Exported CSV and 20s WAV (${WAV_SAMPLE_RATE}Hz).`, "ok");
 };
 
 $('btnVisualize').onclick = () => {
@@ -360,11 +375,11 @@ $('btnVisualize').onclick = () => {
   const t=[], a0=[], a1=[], a2=[], a3=[], a4=[], imuX=[], imuY=[], imuZ=[], gX=[], gY=[], gZ=[];
   for (let i = 0; i < receivedCount; i += step) {
     const b = i * FIELDS;
-    t.push((samples[b]/1000000).toFixed(2) + 's');
-    a0.push(samples[b+1]); a1.push(samples[b+2]); a2.push(samples[b+3]);
-    a3.push(samples[b+4]); a4.push(samples[b+5]);
-    imuX.push(samples[b+8]); imuY.push(samples[b+9]); imuZ.push(samples[b+10]);
-    gX.push(samples[b+11]); gY.push(samples[b+12]); gZ.push(samples[b+13]);
+    t.push((hwSamplesData[b]/1000000).toFixed(2) + 's');
+    a0.push(hwSamplesData[b+1]); a1.push(hwSamplesData[b+2]); a2.push(hwSamplesData[b+3]);
+    a3.push(hwSamplesData[b+4]); a4.push(hwSamplesData[b+5]);
+    imuX.push(hwSamplesData[b+8]); imuY.push(hwSamplesData[b+9]); imuZ.push(hwSamplesData[b+10]);
+    gX.push(hwSamplesData[b+11]); gY.push(hwSamplesData[b+12]); gZ.push(hwSamplesData[b+13]);
   }
   const opt = (title) => ({ responsive:true, maintainAspectRatio:false, elements:{point:{radius:0},line:{borderWidth:1}}, plugins:{title:{display:true,text:title,color:'#fff'},legend:{display:false}}, scales:{x:{ticks:{maxTicksLimit:10,color:'#334d63'}},y:{grid:{color:'#192130'},ticks:{color:'#b8cfe0'}}}});
   charts.push(new Chart($('chartAdc0'), { type:'line', data:{ labels:t, datasets:[{data:a0,borderColor:'#34d399'}] }, options:opt('ADC0') }));
@@ -377,7 +392,7 @@ $('btnVisualize').onclick = () => {
   if (recordedRawFloat) {
     let mD=[], mL=[]; let mStep = Math.floor(recordedRawFloat.length/2000);
     for(let i=0;i<recordedRawFloat.length;i+=mStep){ mD.push(recordedRawFloat[i]); mL.push(""); }
-    charts.push(new Chart($('chartMic'), { type:'line', data:{ labels:mL, datasets:[{data:mD,borderColor:'#f87171'}] }, options:opt('MIC PREVIEW (192k)') }));
+    charts.push(new Chart($('chartMic'), { type:'line', data:{ labels:mL, datasets:[{data:mD,borderColor:'#f87171'}] }, options:opt('MIC PREVIEW (44.1k)') }));
   }
 };
 </script>

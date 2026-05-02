@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>ESP32-S3 DAQ + 192k Sync Mic (Drift Corrected)</title>
+<title>ESP32-S3 DAQ + 192k Mic WAV Export</title>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600;700&family=Syne:wght@400;700;800&display=swap" rel="stylesheet"/>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
@@ -65,7 +65,7 @@ tbody td{padding:5px 8px;text-align:right;border-bottom:1px solid var(--border);
   <header>
     <div class="logo">
       <h1>ESP32<em>·</em>DAQ</h1>
-      <p>ICM42670 + LTC2351 + 192k SYNC MIC</p>
+      <p>ICM42670 + LTC2351 + 192k WAV EXPORT</p>
     </div>
     <div class="conn-row">
       <span style="font-size:9px; color:var(--muted); text-transform:uppercase">Offset(ms):</span>
@@ -89,7 +89,7 @@ tbody td{padding:5px 8px;text-align:right;border-bottom:1px solid var(--border);
     <button id="btnConnect">⬡ Connect</button>
     <button id="btnStart" disabled>▶ Start Sync</button>
     <button id="btnStream" disabled>⇄ Stream</button>
-    <button id="btnDownload" disabled>↓ Save Files</button>
+    <button id="btnDownload" disabled>↓ Save Files (CSV+WAV)</button>
     <button id="btnVisualize" disabled>📈 Visualize</button>
   </div>
 
@@ -124,7 +124,7 @@ tbody td{padding:5px 8px;text-align:right;border-bottom:1px solid var(--border);
 <script>
 const $ = id => document.getElementById(id);
 const TARGET_SAMPLES = 192000;
-const MIC_FREQ = 9600;
+const MIC_FREQ = 9600; // Sample rate for the output WAV
 const FIELDS = 14;
 
 let wsConn = null, samples = null, receivedCount = 0, pktsReceived = 0;
@@ -133,7 +133,7 @@ let sessionTimestamp = "";
 
 // Audio state
 let audioCtx, mediaStream, processor, audioChunks = [];
-let recordedBuffer = null;
+let recordedRawFloat = null; // Storing raw float for WAV conversion
 let isRecordingActive = false;
 
 function log(msg, cls='') {
@@ -182,7 +182,6 @@ $('btnStart').onclick = async () => {
 
     wsConn.send('Start');
     log("Command 'Start' sent to ESP32...", "ok");
-    log(`Waiting ${userDelay}ms for mic trigger...`, "y");
 
     setTimeout(() => {
       isRecordingActive = true;
@@ -194,9 +193,7 @@ $('btnStart').onclick = async () => {
       audioChunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
       let currentRawLen = audioChunks.reduce((a, b) => a + b.length, 0);
       let requiredRawLen = (TARGET_SAMPLES / MIC_FREQ) * audioCtx.sampleRate;
-      if (currentRawLen >= requiredRawLen) {
-        stopMicRecording();
-      }
+      if (currentRawLen >= requiredRawLen) stopMicRecording();
     };
   } catch (e) {
     log("Mic Error: " + e.message, "err");
@@ -210,7 +207,7 @@ async function stopMicRecording() {
   if (processor) {
     processor.disconnect();
     mediaStream.getTracks().forEach(t => t.stop());
-    log("Mic Capture Finished. Resampling...", "ok");
+    log("Resampling Mic data...", "ok");
 
     let fullBuffer = new Float32Array(audioChunks.reduce((a, b) => a + b.length, 0));
     let offset = 0;
@@ -225,14 +222,8 @@ async function stopMicRecording() {
     bufferSource.start();
 
     const rendered = await offlineCtx.startRendering();
-    const resampled = rendered.getChannelData(0);
-
-    recordedBuffer = new Float32Array(TARGET_SAMPLES);
-    for (let i = 0; i < TARGET_SAMPLES; i++) {
-      let val = resampled[i] !== undefined ? resampled[i] : 0;
-      recordedBuffer[i] = Math.max(0, Math.min(4095, Math.round((val * 2047) + 2048)));
-    }
-    log("Mic Buffer Ready: 192,000 samples.", "ok");
+    recordedRawFloat = rendered.getChannelData(0);
+    log("Mic WAV Buffer Ready.", "ok");
   }
 }
 
@@ -262,7 +253,7 @@ function onMessage(evt) {
     $('btnVisualize').disabled = false;
     $('sState').textContent = 'DONE';
     renderTable();
-    log('Binary Stream Complete','ok');
+    log('Stream Complete','ok');
   } else if (msg.type === 'status') {
     $('sState').textContent = msg.value;
   }
@@ -314,6 +305,54 @@ function renderTable() {
   $('tbody').innerHTML = h;
 }
 
+// Helper: WAV Encoder
+function encodeWAV(samples, sampleRate) {
+  let buffer = new ArrayBuffer(44 + samples.length * 2);
+  let view = new DataView(buffer);
+  const writeString = (view, offset, string) => { for (let i = 0; i < string.length; i++) view.setUint8(offset + i, string.charCodeAt(i)); };
+  writeString(view, 0, 'RIFF');
+  view.setUint32(4, 32 + samples.length * 2, true);
+  writeString(view, 8, 'WAVE');
+  writeString(view, 12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeString(view, 36, 'data');
+  view.setUint32(40, samples.length * 2, true);
+  let offset = 44;
+  for (let i = 0; i < samples.length; i++, offset += 2) {
+    let s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+  }
+  return new Blob([view], { type: 'audio/wav' });
+}
+
+$('btnDownload').onclick = () => {
+  if (!samples || receivedCount === 0) return;
+  const prefix = sessionTimestamp || "daq_data";
+  const userDelayMs = $('delayInput').value || "0";
+
+  // 1. Download Hardware CSV (No Mic Columns)
+  let s = 'ts_us,adc0,adc1,adc2,adc3,adc4,u0,u1,ax,ay,az,gx,gy,gz\n';
+  for (let i = 0; i < TARGET_SAMPLES; i++) {
+    const b = i * FIELDS;
+    s += `${samples[b]||0},${samples[b+1]||0},${samples[b+2]||0},${samples[b+3]||0},${samples[b+4]||0},${samples[b+5]||0},${samples[b+6]||0},${samples[b+7]||0},${(samples[b+8]||0).toFixed(4)},${(samples[b+9]||0).toFixed(4)},${(samples[b+10]||0).toFixed(4)},${(samples[b+11]||0).toFixed(2)},${(samples[b+12]||0).toFixed(2)},${(samples[b+13]||0).toFixed(2)}\n`;
+  }
+  const csvBlob = new Blob([s], {type:'text/csv'});
+  const aCsv = document.createElement('a'); aCsv.href = URL.createObjectURL(csvBlob); aCsv.download = `${prefix}_hw.csv`; aCsv.click();
+
+  // 2. Download WAV File
+  if (recordedRawFloat) {
+    const wavBlob = encodeWAV(recordedRawFloat, MIC_FREQ);
+    const aWav = document.createElement('a'); aWav.href = URL.createObjectURL(wavBlob); aWav.download = `${prefix}_mic_${userDelayMs}ms_offset.wav`; aWav.click();
+  }
+  log(`Exported CSV and WAV with ${userDelayMs}ms offset note.`, "ok");
+};
+
 $('btnVisualize').onclick = () => {
   $('chartWrap').classList.add('show');
   charts.forEach(c => c.destroy()); charts = [];
@@ -335,52 +374,11 @@ $('btnVisualize').onclick = () => {
   charts.push(new Chart($('chartAdc4'), { type:'line', data:{ labels:t, datasets:[{data:a4,borderColor:'#fbbf24'}] }, options:opt('ADC4') }));
   charts.push(new Chart($('chartImu'),  { type:'line', data:{ labels:t, datasets:[{label:'AX',data:imuX,borderColor:'#38bdf8'},{label:'AY',data:imuY,borderColor:'#34d399'},{label:'AZ',data:imuZ,borderColor:'#fb923c'}] }, options:{...opt('ACCEL'),plugins:{legend:{display:true,labels:{color:'#fff'}}}} }));
   charts.push(new Chart($('chartGyro'), { type:'line', data:{ labels:t, datasets:[{label:'GX',data:gX,borderColor:'#a78bfa'},{label:'GY',data:gY,borderColor:'#fbbf24'},{label:'GZ',data:gZ,borderColor:'#f87171'}] }, options:{...opt('GYRO'),plugins:{legend:{display:true,labels:{color:'#fff'}}}} }));
-  if (recordedBuffer) {
-    let mD=[], mL=[]; let mStep = Math.floor(recordedBuffer.length/2000);
-    for(let i=0;i<recordedBuffer.length;i+=mStep){ mD.push(recordedBuffer[i]); mL.push(""); }
-    charts.push(new Chart($('chartMic'), { type:'line', data:{ labels:mL, datasets:[{data:mD,borderColor:'#f87171'}] }, options:opt('MIC (SYNC 192k)') }));
+  if (recordedRawFloat) {
+    let mD=[], mL=[]; let mStep = Math.floor(recordedRawFloat.length/2000);
+    for(let i=0;i<recordedRawFloat.length;i+=mStep){ mD.push(recordedRawFloat[i]); mL.push(""); }
+    charts.push(new Chart($('chartMic'), { type:'line', data:{ labels:mL, datasets:[{data:mD,borderColor:'#f87171'}] }, options:opt('MIC PREVIEW (192k)') }));
   }
-};
-
-$('btnDownload').onclick = () => {
-  if (!samples || receivedCount === 0) return;
-  const prefix = sessionTimestamp || "daq_data";
-  const userDelayMs = parseInt($('delayInput').value) || 0;
-  
-  // DRIFT CORRECTION LOGIC
-  // Anchoring the 192k mic samples to the ESP32 hardware time window
-  const startTsUs = samples[0] || 0;
-  const endTsUs = samples[(receivedCount - 1) * FIELDS] || 0;
-  const totalEspDurationUs = endTsUs - startTsUs;
-
-  // The Mic start is ESP start + user defined delay
-  const micStartTsUs = startTsUs + (userDelayMs * 1000);
-  
-  // Divide total session duration by number of mic samples to get actual observed interval
-  const effectiveMicIntervalUs = totalEspDurationUs / (TARGET_SAMPLES - 1);
-
-  let s = 'ts_us,adc0,adc1,adc2,adc3,adc4,u0,u1,ax,ay,az,gx,gy,gz,mic_ts_us,mic_12bit\n';
-  
-  for (let i = 0; i < TARGET_SAMPLES; i++) {
-    const b = i * FIELDS;
-    const micVal = recordedBuffer ? recordedBuffer[i] : 0;
-    
-    // This timestamp scales perfectly across the ESP32 time window
-    const currentMicTs = Math.round(micStartTsUs + (i * effectiveMicIntervalUs));
-
-    s += `${samples[b]||0},${samples[b+1]||0},${samples[b+2]||0},${samples[b+3]||0},` +
-         `${samples[b+4]||0},${samples[b+5]||0},${samples[b+6]||0},${samples[b+7]||0},` +
-         `${(samples[b+8]||0).toFixed(4)},${(samples[b+9]||0).toFixed(4)},${(samples[b+10]||0).toFixed(4)},` +
-         `${(samples[b+11]||0).toFixed(2)},${(samples[b+12]||0).toFixed(2)},${(samples[b+13]||0).toFixed(2)},` +
-         `${currentMicTs},${micVal}\n`;
-  }
-  
-  const csvBlob = new Blob([s], {type:'text/csv'});
-  const aCsv = document.createElement('a'); 
-  aCsv.href = URL.createObjectURL(csvBlob); 
-  aCsv.download = `${prefix}_drift_corrected_${userDelayMs}ms.csv`; 
-  aCsv.click();
-  log(`Download: Drift-corrected CSV ready.`, "ok");
 };
 </script>
 </body>

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>ESP32-S3 DAQ + 192k Sync Mic (Parametric Offset)</title>
+<title>ESP32-S3 DAQ + 192k Sync Mic (TS Sync)</title>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600;700&family=Syne:wght@400;700;800&display=swap" rel="stylesheet"/>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
@@ -24,7 +24,7 @@ header{display:flex;align-items:center;justify-content:space-between;margin-bott
 .conn-row{display:flex;align-items:center;gap:10px}
 #ipInput, #delayInput{background:var(--surface2);border:1px solid var(--border);border-radius:3px;color:var(--text);padding:7px 12px;outline:none}
 #ipInput{width:160px}
-#delayInput{width:80px; color:var(--accent); font-weight:bold}
+#delayInput{width:85px; color:var(--accent); font-weight:bold}
 .ws-dot{width:8px;height:8px;border-radius:50%;background:var(--muted)}
 .ws-dot.open{background:var(--green);box-shadow:0 0 8px var(--green)}
 .ws-dot.err{background:var(--red)}
@@ -69,7 +69,7 @@ tbody td{padding:5px 8px;text-align:right;border-bottom:1px solid var(--border);
     </div>
     <div class="conn-row">
       <span style="font-size:9px; color:var(--muted); text-transform:uppercase">Offset(ms):</span>
-      <input id="delayInput" type="number" value="560">
+      <input id="delayInput" type="number" value="560" step="10">
       <input id="ipInput" type="text" value="10.42.89.182">
       <div class="ws-dot" id="wsDot"></div>
       <span id="wsState" style="font-size:10px; text-transform:uppercase; color:var(--muted)">Disconnected</span>
@@ -159,7 +159,7 @@ $('btnConnect').onclick = () => {
   wsConn.onmessage = onMessage;
 };
 
-// SYNC START: Hardware Trigger + Parametric Delayed Mic Capture
+// 1. SYNC START: Hardware Trigger + Parametric Delayed Mic Capture
 $('btnStart').onclick = async () => {
   if (!wsConn || wsConn.readyState !== 1) return;
   
@@ -181,20 +181,19 @@ $('btnStart').onclick = async () => {
     source.connect(processor);
     processor.connect(audioCtx.destination);
 
-    // SEND START TO ESP32 IMMEDIATELY
+    // SEND START TO ESP32
     wsConn.send('Start');
     log("Command 'Start' sent to ESP32...", "ok");
     log(`Waiting ${userDelay}ms for mic trigger...`, "y");
 
-    // START MIC DATA COLLECTION AFTER USER-DEFINED DELAY
+    // Parametric delay logic
     setTimeout(() => {
       isRecordingActive = true;
-      log(`Mic Data Capture ON (${userDelay}ms offset active)`, "ok");
+      log(`Mic Capture STARTED (${userDelay}ms offset)`, "ok");
     }, userDelay);
 
     processor.onaudioprocess = (e) => {
       if (!isRecordingActive) return;
-
       audioChunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
       
       let currentRawLen = audioChunks.reduce((a, b) => a + b.length, 0);
@@ -210,13 +209,13 @@ $('btnStart').onclick = async () => {
 };
 
 async function stopMicRecording() {
-  if (!isRecordingActive) return;
+  if (!isRecordingActive && audioChunks.length === 0) return;
   isRecordingActive = false;
   
   if (processor) {
     processor.disconnect();
     mediaStream.getTracks().forEach(t => t.stop());
-    log("Mic Capture Finished. Resampling...", "ok");
+    log("Mic Capture Finished. Resampling to 192k...", "ok");
 
     let fullBuffer = new Float32Array(audioChunks.reduce((a, b) => a + b.length, 0));
     let offset = 0;
@@ -238,7 +237,7 @@ async function stopMicRecording() {
       let val = resampled[i] !== undefined ? resampled[i] : 0;
       recordedBuffer[i] = Math.max(0, Math.min(4095, Math.round((val * 2047) + 2048)));
     }
-    log("Mic Buffer Ready: 192,000 samples.", "ok");
+    log("Mic Buffer Ready: 192k samples.", "ok");
   }
 }
 
@@ -351,20 +350,35 @@ $('btnVisualize').onclick = () => {
 $('btnDownload').onclick = () => {
   if (!samples || receivedCount === 0) return;
   const prefix = sessionTimestamp || "daq_data";
-  const currentDelay = $('delayInput').value || "0";
+  const userDelayMs = parseInt($('delayInput').value) || 0;
   
-  let s = 'ts_us,adc0,adc1,adc2,adc3,adc4,u0,u1,ax,ay,az,gx,gy,gz,mic_12bit\n';
+  // Calculate Time Logic
+  const startTsUs = samples[0] || 0; // ESP first timestamp
+  const micStartTsUs = startTsUs + (userDelayMs * 1000); // Mic Start time
+  const micIntervalUs = 1000000 / MIC_FREQ; // 104.166us per sample
+
+  let s = 'ts_us,adc0,adc1,adc2,adc3,adc4,u0,u1,ax,ay,az,gx,gy,gz,mic_ts_us,mic_12bit\n';
+  
   for (let i=0; i<TARGET_SAMPLES; i++) {
     const b = i * FIELDS;
     const micVal = recordedBuffer ? recordedBuffer[i] : 0;
-    s += `${samples[b]||0},${samples[b+1]||0},${samples[b+2]||0},${samples[b+3]||0},${samples[b+4]||0},${samples[b+5]||0},${samples[b+6]||0},${samples[b+7]||0},${(samples[b+8]||0).toFixed(4)},${(samples[b+9]||0).toFixed(4)},${(samples[b+10]||0).toFixed(4)},${(samples[b+11]||0).toFixed(2)},${(samples[b+12]||0).toFixed(2)},${(samples[b+13]||0).toFixed(2)},${micVal}\n`;
+    
+    // Theoretical Mic Timestamp for this row
+    const currentMicTs = Math.round(micStartTsUs + (i * micIntervalUs));
+
+    s += `${samples[b]||0},${samples[b+1]||0},${samples[b+2]||0},${samples[b+3]||0},` +
+         `${samples[b+4]||0},${samples[b+5]||0},${samples[b+6]||0},${samples[b+7]||0},` +
+         `${(samples[b+8]||0).toFixed(4)},${(samples[b+9]||0).toFixed(4)},${(samples[b+10]||0).toFixed(4)},` +
+         `${(samples[b+11]||0).toFixed(2)},${(samples[b+12]||0).toFixed(2)},${(samples[b+13]||0).toFixed(2)},` +
+         `${currentMicTs},${micVal}\n`;
   }
+  
   const csvBlob = new Blob([s], {type:'text/csv'});
   const aCsv = document.createElement('a'); 
   aCsv.href = URL.createObjectURL(csvBlob); 
-  aCsv.download = `${prefix}_sync_${currentDelay}ms.csv`; 
+  aCsv.download = `${prefix}_sync_${userDelayMs}ms.csv`; 
   aCsv.click();
-  log(`Downloaded CSV with ${currentDelay}ms offset label.`, "ok");
+  log(`Download: CSV saved with mic_ts_us column.`, "ok");
 };
 </script>
 </body>

@@ -122,10 +122,10 @@ tbody td{padding:5px 8px;text-align:right;border-bottom:1px solid var(--border);
 </div>
 
 <script>
-// ─── AudioWorklet processor source (injected as Blob URL) ─────────────────────
-// Runs in the audio render thread: deterministic 128-sample frames,
-// zero scheduling jitter. Sends Float32 chunks to the main thread via
-// MessagePort. No ScriptProcessor → no callback delay or dropped frames.
+// ─── AudioWorklet processor source ────────────────────────────────────────────
+// Collects ALL frames (including the discard prefix) and ships every 128-sample
+// block to the main thread. The main thread decides what to keep.
+// maxSamples = discardSamples + rawNeeded — worklet counts the total.
 const WORKLET_CODE = `
 class PcmCaptureProcessor extends AudioWorkletProcessor {
   constructor() {
@@ -146,8 +146,8 @@ class PcmCaptureProcessor extends AudioWorkletProcessor {
 
   process(inputs) {
     if (!this._active) return true;
-    const ch = inputs[0][0];
-    if (!ch) return true;
+    const ch = inputs[0] && inputs[0][0];
+    if (!ch || ch.length === 0) return true;
 
     const remaining = this._maxSamples - this._collected;
     if (remaining <= 0) {
@@ -156,12 +156,10 @@ class PcmCaptureProcessor extends AudioWorkletProcessor {
       return true;
     }
 
-    // Copy only as many samples as we still need (last frame may be partial)
-    const slice = remaining < ch.length ? ch.subarray(0, remaining) : ch;
-    // Transfer a copy so the render-thread buffer stays valid
-    const copy = new Float32Array(slice);
+    const len   = Math.min(ch.length, remaining);
+    const copy  = new Float32Array(ch.subarray(0, len));
     this.port.postMessage({ cmd: 'data', buf: copy }, [copy.buffer]);
-    this._collected += copy.length;
+    this._collected += len;
 
     if (this._collected >= this._maxSamples) {
       this._active = false;
@@ -172,6 +170,21 @@ class PcmCaptureProcessor extends AudioWorkletProcessor {
 }
 registerProcessor('pcm-capture', PcmCaptureProcessor);
 `;
+
+// Load worklet: try Blob URL first (fastest), fall back to data: URI (iOS Safari)
+async function loadWorklet(ctx) {
+  const encoded = encodeURIComponent(WORKLET_CODE);
+  const dataUrl = 'data:application/javascript;charset=utf-8,' + encoded;
+  try {
+    const blob    = new Blob([WORKLET_CODE], { type: 'application/javascript' });
+    const blobUrl = URL.createObjectURL(blob);
+    await ctx.audioWorklet.addModule(blobUrl);
+    URL.revokeObjectURL(blobUrl);
+  } catch (_) {
+    // iOS Safari may block Blob URLs for worklets — use data: URI
+    await ctx.audioWorklet.addModule(dataUrl);
+  }
+}
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const TARGET_SAMPLES = 192000;
@@ -283,41 +296,54 @@ $('btnStart').onclick = async () => {
 
     log(`Native SR: ${nativeSR} Hz | capture: ${captureDurationSec}s | discard: ${discardSamples} smp`, 'y');
 
-    // 2. Inject Worklet (Blob URL approach — no server needed)
-    const blob   = new Blob([WORKLET_CODE], { type: 'application/javascript' });
-    const blobUrl = URL.createObjectURL(blob);
-    await audioCtx.audioWorklet.addModule(blobUrl);
-    URL.revokeObjectURL(blobUrl);
-
+    // 2. Load Worklet (Blob URL with data: fallback for iOS Safari)
+    await loadWorklet(audioCtx);
     workletNode = new AudioWorkletNode(audioCtx, 'pcm-capture');
 
-    // Internal state for sample-accurate discard
+    // CRITICAL: connect to a silent gain node → destination so the AudioContext
+    // render thread stays running on mobile (browsers suspend without a destination sink)
+    const silentGain = audioCtx.createGain();
+    silentGain.gain.value = 0;
+    workletNode.connect(silentGain);
+    silentGain.connect(audioCtx.destination);
+
+    // Sample-accurate discard on the main thread.
+    // The worklet ships every 128-sample frame; we drop the first discardSamples
+    // by counting, then keep the rest. rawSampleCount tracks only kept samples.
     let discarded = 0;
 
     workletNode.port.onmessage = (e) => {
       if (e.data.cmd === 'data') {
-        const frame = e.data.buf; // Float32Array
+        const frame = e.data.buf; // Float32Array transferred from worklet
+
         if (discarded < discardSamples) {
+          // Still in discard phase
           const toDiscard = Math.min(frame.length, discardSamples - discarded);
           discarded += toDiscard;
-          if (toDiscard < frame.length) {
-            // Partial frame: keep the remainder
-            const keep = frame.subarray(toDiscard);
-            rawChunks.push(new Float32Array(keep));
-            rawSampleCount += keep.length;
+          const leftover = frame.length - toDiscard;
+          if (leftover > 0) {
+            // This frame straddles the discard boundary — keep its tail
+            const keep = new Float32Array(frame.buffer, toDiscard * 4, leftover);
+            rawChunks.push(new Float32Array(keep)); // copy so buffer is owned
+            rawSampleCount += leftover;
+          }
+          if (discarded >= discardSamples) {
+            log(`Discard done (${discarded} smp). Recording active.`, 'ok');
           }
         } else {
           rawChunks.push(frame);
           rawSampleCount += frame.length;
         }
       } else if (e.data.cmd === 'done') {
+        log(`Worklet done. Raw kept: ${rawSampleCount} smp @ ${nativeSR}Hz`, 'y');
         finalizeMic(nativeSR);
       }
     };
 
     const source = audioCtx.createMediaStreamSource(mediaStream);
     source.connect(workletNode);
-    // Do NOT connect workletNode to destination — avoids feedback/echo
+
+    // Tell worklet to collect discard prefix + actual recording samples
     workletNode.port.postMessage({ cmd: 'start', maxSamples: discardSamples + rawNeeded });
 
     // 3. NOW send the ESP32 trigger (mic is already running, latency minimised)
@@ -335,13 +361,24 @@ $('btnStart').onclick = async () => {
 async function finalizeMic(nativeSR) {
   log('Mic capture done. Resampling to 192k…', 'ok');
 
+  if (rawSampleCount === 0) {
+    log('ERROR: No raw samples captured — audio pipeline may be suspended.', 'err');
+    return;
+  }
+
   // Flatten chunks into one contiguous Float32 array
   const flat = new Float32Array(rawSampleCount);
   let off = 0;
   for (const chunk of rawChunks) { flat.set(chunk, off); off += chunk.length; }
 
-  // Stop mic tracks
+  // Sanity check: report min/max so you can verify real audio vs silence
+  let mn = Infinity, mx = -Infinity;
+  for (let i = 0; i < flat.length; i++) { if (flat[i] < mn) mn = flat[i]; if (flat[i] > mx) mx = flat[i]; }
+  log(`Signal range: min=${mn.toFixed(4)} max=${mx.toFixed(4)} ${Math.abs(mx-mn) < 0.001 ? '⚠ SILENCE?' : '✓ audio detected'}`, 'y');
+
+  // Stop mic tracks and close context
   if (mediaStream) mediaStream.getTracks().forEach(t => t.stop());
+  if (audioCtx) { try { await audioCtx.close(); } catch(_){} audioCtx = null; }
 
   // Polyphase linear interpolation SRC
   // ratio: how many input samples per output sample
